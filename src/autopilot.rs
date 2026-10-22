@@ -386,8 +386,17 @@ impl AgentStats {
             .rev()
             .filter(|r| settings.matches(r))
             .map(|r| r.group.clone())
-            .find(|g| records.iter().filter(|r| &r.group == g).count() >= n_tasks)?;
-        let rows: Vec<&Record> = records.iter().filter(|r| r.group == latest_group).collect();
+            .find(|g| {
+                records
+                    .iter()
+                    .filter(|r| r.kind == Kind::Agent && &r.group == g)
+                    .count()
+                    >= n_tasks
+            })?;
+        let rows: Vec<&Record> = records
+            .iter()
+            .filter(|r| r.kind == Kind::Agent && r.group == latest_group)
+            .collect();
         let mean = |k: &str| {
             Summary::of(
                 &rows
@@ -504,7 +513,8 @@ fn in_focus(l: &Lever, focus: Option<Focus>) -> bool {
 fn candidate_levers(records: &[Record], tried: &BTreeSet<String>) -> Vec<Lever> {
     let mut ls = advisor::levers(records);
     if ls == [Lever::Baseline] && tried.contains("baseline") {
-        ls.push(Lever::NoiseFloor { cv: None });
+        // The baseline is itself a repeat group, so the noise floor will be
+        // known; only a noisy result (seen in a real run) re-triggers it.
         ls.extend(advisor::SWEEP_ORDER.iter().map(|v| Lever::Sweep(v)));
         ls.push(Lever::AgentBaseline);
     }
@@ -533,8 +543,10 @@ pub fn propose_next(state: &AutopilotState, records: &[Record]) -> Option<Propos
             continue;
         }
         let key = lever_key(&lever, replications + 1);
-        if matches!(lever, Lever::NoiseFloor { .. }) {
-            if replications >= MAX_REPLICATIONS {
+        if let Lever::NoiseFloor { cv } = lever {
+            // Unknown noise needs one repeat group; a noisy one gets up to two more.
+            let cap = if cv.is_none() { 1 } else { MAX_REPLICATIONS };
+            if replications >= cap {
                 continue;
             }
         } else if state.tried.contains(&key) {
@@ -843,6 +855,166 @@ pub fn estimate_ms(spec: &ExperimentSpec, cost: &CostModel, records: &[Record]) 
     }
 }
 
+/// Settings for one autopilot session.
+#[derive(Debug, Clone)]
+pub struct Options {
+    pub budget_min: f64,
+    pub max_steps: usize,
+    pub focus: Option<Focus>,
+    pub dry_run: bool,
+    pub require_approval: bool,
+    pub tolerance_pct: f64,
+    /// e.g. "--backend llama-server --template chatml " — prefixed to every printed command.
+    pub backend_flags: String,
+}
+
+/// Only rows from the backend we are about to drive: a mock run says nothing
+/// about llama-server, and vice versa.
+pub fn relevant(records: &[Record], backend_name: &str) -> Vec<Record> {
+    records
+        .iter()
+        .filter(|r| r.backend == backend_name)
+        .cloned()
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Stop {
+    Budget { next_ms: f64 },
+    MaxSteps,
+    NothingLeft,
+    Interrupted,
+    Declined,
+}
+
+impl std::fmt::Display for Stop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Stop::Budget { next_ms } => write!(
+                f,
+                "budget: the next trial (~{}) would exceed what is left",
+                fmt_ms(*next_ms)
+            ),
+            Stop::MaxSteps => write!(f, "--max-steps reached"),
+            Stop::NothingLeft => write!(f, "no high-value single-variable experiment remains"),
+            Stop::Interrupted => {
+                write!(f, "interrupted (Ctrl-C) after finishing the current trial")
+            }
+            Stop::Declined => write!(f, "stopped at the approval prompt"),
+        }
+    }
+}
+
+pub fn fmt_ms(ms: f64) -> String {
+    if ms >= 60_000.0 {
+        format!("{:.1} min", ms / 60_000.0)
+    } else {
+        format!("{:.1} s", ms / 1000.0)
+    }
+}
+
+/// Decide whether the session may continue with `p`.
+pub fn gate(state: &AutopilotState, p: Option<&Proposal>) -> Option<Stop> {
+    if state.steps >= state.max_steps {
+        return Some(Stop::MaxSteps);
+    }
+    let p = p?;
+    if p.est_ms > state.remaining_ms() {
+        return Some(Stop::Budget { next_ms: p.est_ms });
+    }
+    None
+}
+
+pub fn print_header(records: &[Record], backend_name: &str, opts: &Options, dry: bool) {
+    let cost = CostModel::from_records(records);
+    println!(
+        "═══ AUTOPILOT{} ═══",
+        if dry {
+            " (dry run — nothing will execute)"
+        } else {
+            ""
+        }
+    );
+    println!("backend   : {backend_name}");
+    println!(
+        "notebook  : {} rows from this backend",
+        records
+            .iter()
+            .filter(|r| r.kind != Kind::Prediction)
+            .count()
+    );
+    println!(
+        "budget    : {:.0} min, at most {} trials{}",
+        opts.budget_min,
+        opts.max_steps,
+        opts.focus
+            .map(|f| format!(", focus {f:?}").to_lowercase())
+            .unwrap_or_default()
+    );
+    println!(
+        "cost model: decode {:.1} ms/token, prefill {:.2} ms/prompt token, overhead {:.1} ms ({})",
+        cost.decode_ms_per_tok,
+        cost.prefill_ms_per_tok,
+        cost.overhead_ms,
+        if cost.measured {
+            "measured"
+        } else {
+            "PRIORS — nothing measured yet"
+        }
+    );
+    println!("bottleneck: {}", cost.bottleneck());
+    if advisor::levers(records).contains(&Lever::QuantNeedsRestart) {
+        println!(
+            "skipped   : quantization — a load-time knob. Autopilot never restarts the server; restart it yourself, tag runs (--tag quant=...), then `machine compare`."
+        );
+    }
+}
+
+pub fn print_proposal(n: usize, p: &Proposal, opts: &Options) {
+    println!(
+        "\n#{n:<2} {}   lesson {}   est {}",
+        p.key,
+        p.lesson,
+        fmt_ms(p.est_ms)
+    );
+    println!("    why : {}", p.rationale);
+    println!("    $ {}", p.command(&opts.backend_flags));
+}
+
+/// Show the sequence of trials the autopilot would run. Pure: no inference,
+/// no writes. Each trial is assumed to take its estimated time.
+pub fn dry_run(all: &[Record], backend_name: &str, opts: &Options) -> Vec<Proposal> {
+    let records = relevant(all, backend_name);
+    print_header(&records, backend_name, opts, true);
+    let mut state = AutopilotState::new(opts.budget_min, opts.max_steps, opts.focus);
+    let mut out = Vec::new();
+    let stop = loop {
+        let p = propose_next(&state, &records);
+        if let Some(stop) = gate(&state, p.as_ref()) {
+            break stop;
+        }
+        let Some(p) = p else { break Stop::NothingLeft };
+        print_proposal(state.steps + 1, &p, opts);
+        state.tried.insert(p.key.clone());
+        state.spent_ms += p.est_ms;
+        state.steps += 1;
+        out.push(p);
+    };
+    println!(
+        "\n── would run {} trial(s), ~{} of the {:.0} min budget. Stops: {stop}.",
+        out.len(),
+        fmt_ms(state.spent_ms),
+        opts.budget_min
+    );
+    if stop == Stop::NothingLeft || out.is_empty() {
+        return out;
+    }
+    println!(
+        "   (a real run re-plans after every trial from the new measurements, so later trials may differ)"
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -859,14 +1031,14 @@ mod tests {
             assert!(keys.len() < 50, "proposer does not terminate");
         }
         assert_eq!(keys[0], "baseline");
+        assert!(
+            !keys.iter().any(|k| k.starts_with("noise#")),
+            "baseline already measures noise"
+        );
         assert!(keys.contains(&"sweep:cache_prompt".to_string()));
         let pos = |k: &str| keys.iter().position(|x| x == k).unwrap();
         assert!(pos("agent:baseline") < pos("agent:critic=model"));
         assert!(pos("agent:baseline") < pos("agent:cache_prompt"));
-        assert_eq!(
-            keys.iter().filter(|k| k.starts_with("noise#")).count(),
-            MAX_REPLICATIONS
-        );
     }
 
     #[test]
@@ -914,8 +1086,6 @@ mod tests {
         let st = AutopilotState::new(30.0, 40, Some(Focus::Cache));
         let mut st2 = st.clone();
         st2.tried.insert("baseline".into());
-        st2.tried.insert("noise#1".into());
-        st2.tried.insert("noise#2".into());
         let p = propose_next(&st2, &[]).unwrap();
         let cmd = p.command("--backend mock ");
         assert!(

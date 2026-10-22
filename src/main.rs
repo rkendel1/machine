@@ -2,7 +2,7 @@
 
 mod advisor;
 mod agent;
-#[allow(dead_code)] // wired into the CLI in the next step
+#[allow(dead_code)] // execution path lands in the next commit
 mod autopilot;
 mod backend;
 mod calc;
@@ -33,8 +33,9 @@ struct Cli {
     cmd: Cmd,
 }
 
+/// Which backend to talk to and how. Shared by every command that infers.
 #[derive(Args, Clone)]
-struct Common {
+struct BackendArgs {
     /// Inference backend.
     #[arg(long, value_enum, default_value = "mock", env = "MACHINE_BACKEND")]
     backend: BackendKind,
@@ -50,6 +51,41 @@ struct Common {
     /// Process to sample memory from: auto | self | none | pid:<N> | name:<substr>.
     #[arg(long, default_value = "auto")]
     watch: String,
+}
+
+impl BackendArgs {
+    fn config(&self) -> BackendConfig {
+        BackendConfig {
+            kind: self.backend,
+            url: self.url.clone(),
+            model: self.model.clone(),
+        }
+    }
+
+    /// The same settings as command-line flags, so proposals are copy-pasteable.
+    fn flags(&self) -> String {
+        use clap::ValueEnum;
+        let name = |v: Option<clap::builder::PossibleValue>| {
+            v.map(|p| p.get_name().to_string()).unwrap_or_default()
+        };
+        let mut s = format!("--backend {} ", name(self.backend.to_possible_value()));
+        if let Some(u) = &self.url {
+            s += &format!("--url {u} ");
+        }
+        if let Some(m) = &self.model {
+            s += &format!("--model {m} ");
+        }
+        if self.template != lab::Template::Raw {
+            s += &format!("--template {} ", name(self.template.to_possible_value()));
+        }
+        s
+    }
+}
+
+#[derive(Args, Clone)]
+struct Common {
+    #[command(flatten)]
+    b: BackendArgs,
     /// Label for this group of runs (used by `compare`).
     #[arg(long)]
     label: Option<String>,
@@ -178,6 +214,29 @@ enum Cmd {
         #[arg(long)]
         verbose: bool,
     },
+    /// Run the predict → run → score → learn cycle unattended, one single-variable trial at a time.
+    Autopilot {
+        #[command(flatten)]
+        b: BackendArgs,
+        /// Wall-clock budget in minutes.
+        #[arg(long, default_value_t = 30.0)]
+        budget: f64,
+        /// Maximum number of trials.
+        #[arg(long, default_value_t = 40)]
+        max_steps: usize,
+        /// Only propose experiments about this area (baseline/noise prerequisites still run).
+        #[arg(long, value_enum)]
+        focus: Option<autopilot::Focus>,
+        /// Print the trials it would run, with predictions, then exit. Runs nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Ask for confirmation before every trial.
+        #[arg(long)]
+        require_approval: bool,
+        /// Prediction tolerance in percent.
+        #[arg(long, default_value_t = predict::DEFAULT_TOLERANCE_PCT)]
+        tolerance: f64,
+    },
     /// Side-by-side comparison of labelled runs.
     Compare {
         #[arg(long = "label", required = true)]
@@ -220,12 +279,8 @@ fn parse_tags(tags: &[String]) -> Result<BTreeMap<String, String>> {
 
 fn make_lab(c: &Common, quiet: bool) -> Result<lab::Lab> {
     lab::Lab::new(lab::LabOptions {
-        backend: BackendConfig {
-            kind: c.backend,
-            url: c.url.clone(),
-            model: c.model.clone(),
-        },
-        watch: c.watch.clone(),
+        backend: c.b.config(),
+        watch: c.b.watch.clone(),
         label: c.label.clone(),
         tags: parse_tags(&c.tags)?,
         lesson: c.lesson,
@@ -233,7 +288,7 @@ fn make_lab(c: &Common, quiet: bool) -> Result<lab::Lab> {
         predictions: c.predict.clone(),
         no_predict: c.no_predict,
         quiet,
-        template: c.template,
+        template: c.b.template,
     })
 }
 
@@ -390,6 +445,32 @@ fn main() -> Result<()> {
                     verbose,
                 },
             )?;
+        }
+        Cmd::Autopilot {
+            b,
+            budget,
+            max_steps,
+            focus,
+            dry_run,
+            require_approval,
+            tolerance,
+        } => {
+            let opts = autopilot::Options {
+                budget_min: budget,
+                max_steps,
+                focus,
+                dry_run,
+                require_approval,
+                tolerance_pct: tolerance,
+                backend_flags: b.flags(),
+            };
+            let records = notebook::Notebook::open()?.all()?;
+            let backend_name = backend::build(&b.config())?.name();
+            if dry_run {
+                autopilot::dry_run(&records, &backend_name, &opts);
+            } else {
+                bail!("real execution lands in the next commit; use --dry-run");
+            }
         }
         Cmd::Compare { labels, metrics } => {
             let records = notebook::Notebook::open()?.all()?;
