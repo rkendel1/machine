@@ -1,0 +1,33 @@
+═══ AGENT  critic=None  memory_window=all  max_steps=6  tasks=1×1 ═══
+backend : llama-server@http://127.0.0.1:8080
+model   : models/qwen2.5-0.5b-instruct-q4_k_m.gguf n_ctx=2048
+memory  : llama-server (pid 5524)
+label   : rebuild
+template: Chatml
+loop: observation → inference → action(CALC tool | ANSWER)
+actor params: max_tokens=32 temperature=0 seed=Some(42)
+  [✓] task  4 r1 answer     696 (truth    696)  calls  3  tokens   544  wall 4250.5 ms
+    actor  153+15 tok   1483.8 ms  → Calc("96*5 + 72*3")
+    actor  173+8  tok   1356.9 ms  → Calc("696")
+    actor  186+9  tok   1376.2 ms  → Answer(696)
+
+── AGENT SUMMARY (1 episodes) ────────────────────────────────
+  metric                   mean        sd    cv%        p50        p95        min        max
+  success                  1.00      0.00    0.0       1.00       1.00       1.00       1.00
+  steps                    3.00      0.00    0.0       3.00       3.00       3.00       3.00
+  calls                    3.00      0.00    0.0       3.00       3.00       3.00       3.00
+  critic_calls             0.00      0.00    0.0       0.00       0.00       0.00       0.00
+  format_errors            0.00      0.00    0.0       0.00       0.00       0.00       0.00
+  total_tokens              544      0.00    0.0        544        544        544        544
+  wall_ms                  4251      0.00    0.0       4251       4251       4251       4251
+  critic_ms                0.00      0.00    0.0       0.00       0.00       0.00       0.00
+  peak_rss_mib              643      0.00    0.0        643        643        643        643
+
+  accuracy            100%  (1/1)
+  tokens per correct  544
+  ms per correct      4251
+
+── PREDICTION vs MEASURED (tolerance ±20%)
+  calls                    predicted            3  measured            3  error   0.0%  ✓ within tolerance
+  success                  predicted         100%  measured         100%  error   0.0%  ✓ within tolerance
+  wall_ms                  predicted    4290.0 ms  measured    4250.5 ms  error   0.9%  ✓ within tolerance

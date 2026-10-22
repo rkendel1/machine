@@ -1,0 +1,19 @@
+═══ SWEEP temperature ∈ {0, 0.8} × 5 runs (+1 warm-up), interleaved ═══
+backend : llama-server@http://127.0.0.1:8080
+model   : models/qwen2.5-0.5b-instruct-q4_k_m.gguf n_ctx=2048
+memory  : llama-server (pid 5511)
+template: Chatml
+only temperature changes; everything else is held at the baseline.
+  warm #1  prefill    28 tok  250.6 ms | decode   64 tok 2269.1 ms = 28.2 t/s | wall 2522.2 ms | ovh 2.5 ms | rss 643.4 MiB→643.4 MiB
+
+── SWEEP RESULT: decode_tok_s by temperature ───────────────────────────
+  temperature            mean        sd    cv%  prompt_t   compl_t  vs first value
+  0                      28.3      0.79    2.8        28        64  baseline
+  0.8                    28.8      0.94    3.3        28        64  +1.8%  within noise
+
+  linear fit: decode_tok_s ≈ 28.293 + 0.6539 × temperature   (R² = 1.000)
+  use this line to predict the next point BEFORE you run it; R² well below 1 means the relationship isn't linear here.
+
+── PREDICTION vs MEASURED (tolerance ±20%)
+  decode_tok_s@temperature=0 predicted   28.0 tok/s  measured   28.3 tok/s  error   1.0%  ✓ within tolerance
+  decode_tok_s@temperature=0.8 predicted   27.0 tok/s  measured   28.8 tok/s  error   6.3%  ✓ within tolerance

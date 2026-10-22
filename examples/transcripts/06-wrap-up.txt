@@ -1,0 +1,14 @@
+═══ SESSION CHECK ═══
+
+Answer these out loud or in writing before you close the terminal:
+  1. Can you explain why the current loop is fast or slow without appealing to magic?
+     (name the phase — prefill, decode, overhead, extra calls — and the number that shows it)
+  2. Can you predict the effect of removing or changing one component before running it?
+  3. Can you design the next single-variable experiment yourself?
+
+WEAKEST IDEA: lesson 4 (A simple agentic wrapper) — mean prediction error 32%.
+  Rebuild it smaller: run a single task (--tasks 0) with --verbose; predict prompt_tokens of call 2 from call 1 plus the history line length.
+
+WHAT SHOULD I BUILD NEXT?
+  Prompt-prefix caching hasn't been measured. With a fixed prompt, a cache hit should collapse prefill_ms.
+  $ machine sweep --backend llama-server --lesson 3 --var cache-prompt --values false,true --metric prefill_ms --repeat 5

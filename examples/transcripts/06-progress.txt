@@ -1,0 +1,10 @@
+═══ PROGRESS ═══  (a lesson passes after ≥2 predictions within tolerance, the latest included)
+
+  [PASSED ] 1. Minimal inference loop         predictions  6  within tol  4  mean err    14%  last err     2%
+  [PASSED ] 2. Measurement discipline         predictions  2  within tol  2  mean err     4%  last err     4%
+  [PASSED ] 3. Single-variable experiments    predictions  9  within tol  7  mean err    14%  last err     4%
+  [PASSED ] 4. A simple agentic wrapper       predictions  9  within tol  6  mean err    32%  last err     1%
+  [PASSED ] 5. Critic / verifier              predictions  8  within tol  6  mean err    26%  last err     5%
+  [PASSED ] 6. Closing the optimization loop  predictions  2  within tol  2  mean err     4%  last err     6%
+
+  rows in notebook: 96 real, 0 simulated

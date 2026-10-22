@@ -1,0 +1,9 @@
+═══ COMPARE ═══
+  q4           n=8   quant=q4_k_m threads=2 max_tokens=64 temp=0 llama-server@http://127.0.0.1:8080
+  q8           n=8   quant=q8_0 threads=2 max_tokens=64 temp=0 llama-server@http://127.0.0.1:8080
+
+  metric                           q4               q8  Δ last vs first
+  decode_tok_s              28.1±0.68        24.9±0.51  -11.3% (worse), real difference (|t|≥2)
+  prefill_tok_s              135±9.72         148±8.89  +9.6% (better), real difference (|t|≥2)
+  wall_ms                   2490±63.1        2761±50.5  +10.9% (worse), real difference (|t|≥2)
+  peak_rss_mib               592±0.38         737±0.00  +24.4% (worse), real difference (|t|≥2)

@@ -1,0 +1,23 @@
+═══ SWEEP max_tokens ∈ {16, 32, 64, 128} × 3 runs (+1 warm-up), interleaved ═══
+backend : llama-server@http://127.0.0.1:8080
+model   : models/qwen2.5-0.5b-instruct-q4_k_m.gguf n_ctx=2048
+memory  : llama-server (pid 5273)
+template: Chatml
+only max_tokens changes; everything else is held at the baseline.
+  warm #1  prefill    28 tok  207.7 ms | decode   16 tok  520.5 ms = 30.7 t/s | wall  729.5 ms | ovh 1.4 ms | rss 592.7 MiB→592.7 MiB
+
+── SWEEP RESULT: wall_ms by max_tokens ───────────────────────────
+  max_tokens             mean        sd    cv%  prompt_t   compl_t  vs first value
+  16                      746      38.6    5.2        28        16  baseline
+  32                     1335      43.2    3.2        28        32  +79.0%  real difference (|t|≥2)
+  64                     2534      57.6    2.3        28        64  +239.7%  real difference (|t|≥2)
+  128                    4764      41.6    0.9        28       128  +538.6%  real difference (|t|≥2)
+
+  linear fit: wall_ms ≈ 193.764 + 35.8510 × max_tokens   (R² = 1.000)
+  use this line to predict the next point BEFORE you run it; R² well below 1 means the relationship isn't linear here.
+
+── PREDICTION vs MEASURED (tolerance ±20%)
+  wall_ms@max_tokens=16    predicted     780.0 ms  measured     746.0 ms  error   4.6%  ✓ within tolerance
+  wall_ms@max_tokens=32    predicted    1340.0 ms  measured    1335.2 ms  error   0.4%  ✓ within tolerance
+  wall_ms@max_tokens=64    predicted    2490.0 ms  measured    2534.2 ms  error   1.7%  ✓ within tolerance
+  wall_ms@max_tokens=128   predicted    4730.0 ms  measured    4763.8 ms  error   0.7%  ✓ within tolerance

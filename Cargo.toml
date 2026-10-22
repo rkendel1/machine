@@ -1,0 +1,19 @@
+[package]
+name = "machine"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Predict, run, compare: a lab for measuring and optimizing agentic loops on local inference"
+license = "MIT"
+repository = "https://github.com/rkendel1/machine"
+
+[profile.release]
+debug = "line-tables-only"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+ureq = { version = "2", default-features = false, features = ["json"] }

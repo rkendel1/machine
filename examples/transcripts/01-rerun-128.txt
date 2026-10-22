@@ -1,0 +1,28 @@
+═══ RUN × 1 (+0 warm-up) ═══
+backend : llama-server@http://127.0.0.1:8080
+model   : models/qwen2.5-0.5b-instruct-q4_k_m.gguf n_ctx=2048
+memory  : llama-server (pid 5526)
+template: Chatml
+params  : max_tokens=128 temperature=0 seed=Some(42) cache_prompt=false ignore_eos=true
+
+  #1  prefill    28 tok  202.2 ms | decode  128 tok 4630.2 ms = 27.6 t/s | wall 4834.2 ms | ovh 1.8 ms | rss 643.4 MiB→643.4 MiB
+
+── OUTPUT (first run) ─────────────────────────────────────────
+Generating text one token at a time is typically limited by memory bandwidth because it requires the entire text to be stored in memory at once, which can be very resource-intensive. This limits the ability to process larger texts or to generate text quickly. To overcome this limitation, text generation algorithms often use techniques like chunking or batching to process text in smaller chunks, which can be more efficient in terms of memory usage. Additionally, some models may use techniques like attention or positional encoding to reduce the number of tokens needed to generate text, further reducing the memory requirements. These approaches help to balance the trade-off between generating text quickly and efficiently and managing memory
+
+── SUMMARY (1 measured runs) ─────────────────────────────────
+  metric                   mean        sd    cv%        p50        p95        min        max
+  decode_tok_s             27.6      0.00    0.0       27.6       27.6       27.6       27.6
+  prefill_tok_s             138      0.00    0.0        138        138        138        138
+  prefill_ms                202      0.00    0.0        202        202        202        202
+  decode_ms                4630      0.00    0.0       4630       4630       4630       4630
+  wall_ms                  4834      0.00    0.0       4834       4834       4834       4834
+  overhead_ms              1.78      0.00    0.0       1.78       1.78       1.78       1.78
+  prompt_tokens            28.0      0.00    0.0       28.0       28.0       28.0       28.0
+  completion_tokens         128      0.00    0.0        128        128        128        128
+  peak_rss_mib              643      0.00    0.0        643        643        643        643
+  rss_delta_mib            0.01      0.00    0.0       0.01       0.01       0.01       0.01
+
+── PREDICTION vs MEASURED (tolerance ±20%)
+  decode_tok_s             predicted   28.0 tok/s  measured   27.6 tok/s  error   1.3%  ✓ within tolerance
+  wall_ms                  predicted    4760.0 ms  measured    4834.2 ms  error   1.5%  ✓ within tolerance

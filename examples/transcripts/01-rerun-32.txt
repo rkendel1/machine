@@ -1,0 +1,28 @@
+═══ RUN × 1 (+0 warm-up) ═══
+backend : llama-server@http://127.0.0.1:8080
+model   : models/qwen2.5-0.5b-instruct-q4_k_m.gguf n_ctx=2048
+memory  : llama-server (pid 5526)
+template: Chatml
+params  : max_tokens=32 temperature=0 seed=Some(42) cache_prompt=false ignore_eos=true
+
+  #1  prefill    28 tok  205.4 ms | decode   32 tok 1112.3 ms = 28.8 t/s | wall 1321.8 ms | ovh 4.1 ms | rss 643.3 MiB→643.3 MiB
+
+── OUTPUT (first run) ─────────────────────────────────────────
+Generating text one token at a time is typically limited by memory bandwidth because it requires the entire text to be stored in memory at once, which can be very resource
+
+── SUMMARY (1 measured runs) ─────────────────────────────────
+  metric                   mean        sd    cv%        p50        p95        min        max
+  decode_tok_s             28.8      0.00    0.0       28.8       28.8       28.8       28.8
+  prefill_tok_s             136      0.00    0.0        136        136        136        136
+  prefill_ms                205      0.00    0.0        205        205        205        205
+  decode_ms                1112      0.00    0.0       1112       1112       1112       1112
+  wall_ms                  1322      0.00    0.0       1322       1322       1322       1322
+  overhead_ms              4.09      0.00    0.0       4.09       4.09       4.09       4.09
+  prompt_tokens            28.0      0.00    0.0       28.0       28.0       28.0       28.0
+  completion_tokens        32.0      0.00    0.0       32.0       32.0       32.0       32.0
+  peak_rss_mib              643      0.00    0.0        643        643        643        643
+  rss_delta_mib            0.01      0.00    0.0       0.01       0.01       0.01       0.01
+
+── PREDICTION vs MEASURED (tolerance ±20%)
+  decode_tok_s             predicted   28.0 tok/s  measured   28.8 tok/s  error   2.7%  ✓ within tolerance
+  wall_ms                  predicted    1340.0 ms  measured    1321.8 ms  error   1.4%  ✓ within tolerance

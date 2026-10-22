@@ -1,0 +1,30 @@
+═══ AGENT  critic=None  memory_window=all  max_steps=6  tasks=1×1 ═══
+backend : llama-server@http://127.0.0.1:8080
+model   : models/qwen2.5-0.5b-instruct-q4_k_m.gguf n_ctx=2048
+memory  : llama-server (pid 5528)
+label   : rebuild
+template: Chatml
+loop: observation → inference → action(CALC tool | ANSWER)
+actor params: max_tokens=32 temperature=0 seed=Some(42)
+  [✗] task  0 r1 answer     288 (truth   2016)  calls  2  tokens   325  wall 2358.0 ms
+    actor  146+10 tok   1166.2 ms  → Calc("12*24")
+    actor  161+8  tok   1161.6 ms  → Answer(288)
+
+── AGENT SUMMARY (1 episodes) ────────────────────────────────
+  metric                   mean        sd    cv%        p50        p95        min        max
+  success                  0.00      0.00    0.0       0.00       0.00       0.00       0.00
+  steps                    2.00      0.00    0.0       2.00       2.00       2.00       2.00
+  calls                    2.00      0.00    0.0       2.00       2.00       2.00       2.00
+  critic_calls             0.00      0.00    0.0       0.00       0.00       0.00       0.00
+  format_errors            0.00      0.00    0.0       0.00       0.00       0.00       0.00
+  total_tokens              325      0.00    0.0        325        325        325        325
+  wall_ms                  2358      0.00    0.0       2358       2358       2358       2358
+  critic_ms                0.00      0.00    0.0       0.00       0.00       0.00       0.00
+  peak_rss_mib              643      0.00    0.0        643        643        643        643
+
+  accuracy            0%  (0/1)
+
+── PREDICTION vs MEASURED (tolerance ±20%)
+  calls                    predicted            2  measured            2  error   0.0%  ✓ within tolerance
+  success                  predicted           0%  measured           0%  error   0.0%  ✓ within tolerance
+  wall_ms                  predicted    2490.0 ms  measured    2358.0 ms  error   5.6%  ✓ within tolerance

@@ -1,0 +1,36 @@
+═══ RUN × 8 (+0 warm-up) ═══
+backend : llama-server@http://127.0.0.1:8080
+model   : models/qwen2.5-0.5b-instruct-q4_k_m.gguf n_ctx=2048
+memory  : llama-server (pid 5270)
+label   : q4
+template: Chatml
+tags    : quant=q4_k_m threads=2
+params  : max_tokens=64 temperature=0 seed=Some(42) cache_prompt=false ignore_eos=true
+
+  #1  prefill    28 tok  203.9 ms | decode   64 tok 2251.3 ms = 28.4 t/s | wall 2456.9 ms | ovh 1.7 ms | rss 591.5 MiB→591.5 MiB
+  #2  prefill    28 tok  207.6 ms | decode   64 tok 2286.9 ms = 28.0 t/s | wall 2498.5 ms | ovh 4.0 ms | rss 591.5 MiB→592.6 MiB
+  #3  prefill    28 tok  204.5 ms | decode   64 tok 2263.1 ms = 28.3 t/s | wall 2469.0 ms | ovh 1.4 ms | rss 592.6 MiB→592.6 MiB
+  #4  prefill    28 tok  189.8 ms | decode   64 tok 2208.6 ms = 29.0 t/s | wall 2399.7 ms | ovh 1.3 ms | rss 592.6 MiB→592.6 MiB
+  #5  prefill    28 tok  211.6 ms | decode   64 tok 2407.0 ms = 26.6 t/s | wall 2619.9 ms | ovh 1.3 ms | rss 592.6 MiB→592.6 MiB
+  #6  prefill    28 tok  211.5 ms | decode   64 tok 2263.3 ms = 28.3 t/s | wall 2476.1 ms | ovh 1.3 ms | rss 592.6 MiB→592.6 MiB
+  #7  prefill    28 tok  195.0 ms | decode   64 tok 2281.8 ms = 28.0 t/s | wall 2478.1 ms | ovh 1.3 ms | rss 592.6 MiB→592.6 MiB
+  #8  prefill    28 tok  243.9 ms | decode   64 tok 2274.9 ms = 28.1 t/s | wall 2520.1 ms | ovh 1.3 ms | rss 592.6 MiB→592.6 MiB
+
+distinct outputs: 1/8 
+
+── SUMMARY (8 measured runs) ─────────────────────────────────
+  metric                   mean        sd    cv%        p50        p95        min        max
+  decode_tok_s             28.1      0.68    2.4       28.2       28.8       26.6       29.0
+  prefill_tok_s             135      9.72    7.2        136        146        115        148
+  prefill_ms                208      16.2    7.8        206        233        190        244
+  decode_ms                2280      57.0    2.5       2269       2365       2209       2407
+  wall_ms                  2490      63.1    2.5       2477       2585       2400       2620
+  overhead_ms              1.70      0.96   56.5       1.32       3.23       1.26       4.04
+  prompt_tokens            28.0      0.00    0.0       28.0       28.0       28.0       28.0
+  completion_tokens        64.0      0.00    0.0       64.0       64.0       64.0       64.0
+  peak_rss_mib              592      0.38    0.1        593        593        592        593
+  rss_delta_mib            0.13      0.38  280.5       0.00       0.70       0.00       1.07
+
+── PREDICTION vs MEASURED (tolerance ±20%)
+  decode_tok_s             predicted   27.0 tok/s  measured   28.1 tok/s  error   3.9%  ✓ within tolerance
+  wall_ms                  predicted    2600.0 ms  measured    2489.8 ms  error   4.4%  ✓ within tolerance

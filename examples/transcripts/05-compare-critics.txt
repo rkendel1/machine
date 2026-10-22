@@ -1,0 +1,11 @@
+═══ COMPARE ═══
+  greedy-none  n=10  critic=none memory_window=all max_tokens=32 temp=0 llama-server@http://127.0.0.1:8080
+  greedy-critic n=10  critic=model memory_window=all max_tokens=32 temp=0 llama-server@http://127.0.0.1:8080
+  greedy-oracle n=10  critic=oracle memory_window=all max_tokens=32 temp=0 llama-server@http://127.0.0.1:8080
+
+  metric                  greedy-none    greedy-critic    greedy-oracle  Δ last vs first
+  success                   0.50±0.53        0.50±0.53        0.50±0.53  +0 pts (same), within noise
+  calls                     3.10±1.60        3.90±1.20        4.20±1.93  +35.5% (worse), within noise
+  total_tokens                573±363          660±321          831±444  +45.0% (worse), within noise
+  wall_ms                   4538±2729        4979±2519        6486±3558  +42.9% (worse), within noise
+  critic_ms                 0.00±0.00          563±307        0.00±0.00  0.00 abs (same), within noise

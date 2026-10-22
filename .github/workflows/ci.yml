@@ -1,0 +1,111 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned so the cached build is reproducible. Bump deliberately, then
+  # re-run the real-model job and compare notebooks (that's a single-variable change).
+  LLAMA_CPP_SHA: 184f6536024668e8908ab8c86033d56708e62b40
+  MODEL_REPO: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+  MODEL_Q4: qwen2.5-0.5b-instruct-q4_k_m.gguf
+  MODEL_Q8: qwen2.5-0.5b-instruct-q8_0.gguf
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - name: Simulator smoke test
+        env:
+          MACHINE_HOME: ${{ runner.temp }}/mock
+        run: |
+          cargo run -q -- run --repeat 3 --predict decode_tok_s=240
+          cargo run -q -- sweep --var max-tokens --values 8,16,32 --repeat 2 --quiet --no-predict
+          cargo run -q -- agent --tasks 0,1 --critic model --temperature 0.8 --no-predict
+          cargo run -q -- progress
+
+  real-model:
+    # A real local model on the CI runner's CPU: llama.cpp + Qwen2.5-0.5B (Q4_K_M and Q8_0).
+    # Both the llama-server build and the GGUF files are cached, so only the first run downloads/builds.
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache llama-server build
+        id: llama-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/llama-bin
+          key: llama-server-${{ runner.os }}-${{ runner.arch }}-${{ env.LLAMA_CPP_SHA }}-static-portable
+
+      - name: Build llama-server (cache miss only)
+        if: steps.llama-cache.outputs.cache-hit != 'true'
+        run: |
+          git init -q ~/llama.cpp && cd ~/llama.cpp
+          git fetch -q --depth 1 https://github.com/ggml-org/llama.cpp "$LLAMA_CPP_SHA"
+          git checkout -q FETCH_HEAD
+          # GGML_NATIVE=OFF: the cached binary may be restored on a different CPU model.
+          # BUILD_SHARED_LIBS=OFF: one self-contained binary is all we cache.
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DBUILD_SHARED_LIBS=OFF \
+                -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON
+          cmake --build build --target llama-server -j"$(nproc)"
+          mkdir -p ~/llama-bin && cp build/bin/llama-server ~/llama-bin/
+
+      - name: Cache models
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/models
+          key: gguf-${{ env.MODEL_Q4 }}-${{ env.MODEL_Q8 }}-v1
+
+      - name: Download models (cache miss only)
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/models
+          for f in "$MODEL_Q4" "$MODEL_Q8"; do
+            curl -fSL --retry 3 -o ~/models/"$f" "https://huggingface.co/$MODEL_REPO/resolve/main/$f"
+          done
+          ls -la ~/models
+
+      - name: Build machine
+        run: cargo build --release
+
+      - name: Run the real session
+        env:
+          LLAMA_SERVER: /home/runner/llama-bin/llama-server
+          MODEL_Q4: /home/runner/models/${{ env.MODEL_Q4 }}
+          MODEL_Q8: /home/runner/models/${{ env.MODEL_Q8 }}
+          MACHINE_HOME: ${{ runner.temp }}/real
+        run: examples/real-session.sh ./target/release/machine ci-out
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo '## machine — real local model on the CI runner'
+            echo '```'; cat ci-out/00-env.txt 2>/dev/null; echo '```'
+            for f in 03-compare-q4-q8 05-compare-critics 06-progress 06-wrap-up; do
+              [ -f "ci-out/$f.txt" ] && { echo "### $f"; echo '```'; cat "ci-out/$f.txt"; echo '```'; }
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-session-${{ github.run_number }}
+          path: ci-out/

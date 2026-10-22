@@ -1,0 +1,38 @@
+═══ AGENT  critic=None  memory_window=all  max_steps=6  tasks=10×1 ═══
+backend : llama-server@http://127.0.0.1:8080
+model   : models/qwen2.5-0.5b-instruct-q4_k_m.gguf n_ctx=2048
+memory  : llama-server (pid 5520)
+label   : greedy-none
+template: Chatml
+loop: observation → inference → action(CALC tool | ANSWER)
+actor params: max_tokens=32 temperature=0 seed=Some(42)
+  [✗] task  0 r1 answer     288 (truth   2016)  calls  2  tokens   325  wall 2565.7 ms
+  [✗] task  1 r1 answer   20400 (truth  61200)  calls  3  tokens   513  wall 4213.5 ms
+  [✓] task  2 r1 answer     605 (truth    605)  calls  2  tokens   351  wall 2950.9 ms
+  [✗] task  3 r1 answer    none (truth  21600)  calls  6  tokens  1193  wall 9251.1 ms
+  [✓] task  4 r1 answer     696 (truth    696)  calls  3  tokens   544  wall 4469.2 ms
+  [✓] task  5 r1 answer      52 (truth     52)  calls  2  tokens   315  wall 2503.5 ms
+  [✓] task  6 r1 answer    2304 (truth   2304)  calls  2  tokens   337  wall 2604.6 ms
+  [✓] task  7 r1 answer     760 (truth    760)  calls  3  tokens   534  wall 4332.1 ms
+  [✗] task  8 r1 answer    1500 (truth  10500)  calls  2  tokens   335  wall 2743.3 ms
+  [✗] task  9 r1 answer    none (truth     13)  calls  6  tokens  1283  wall 9747.2 ms
+
+── AGENT SUMMARY (10 episodes) ────────────────────────────────
+  metric                   mean        sd    cv%        p50        p95        min        max
+  success                  0.50      0.53  105.4       0.50       1.00       0.00       1.00
+  steps                    3.10      1.60   51.5       2.50       6.00       2.00       6.00
+  calls                    3.10      1.60   51.5       2.50       6.00       2.00       6.00
+  critic_calls             0.00      0.00    0.0       0.00       0.00       0.00       0.00
+  format_errors            0.50      1.08  216.0       0.00       2.55       0.00       3.00
+  total_tokens              573       363   63.3        432       1242        315       1283
+  wall_ms                  4538      2729   60.1       3582       9524       2504       9747
+  critic_ms                0.00      0.00    0.0       0.00       0.00       0.00       0.00
+  peak_rss_mib              626      0.01    0.0        626        626        625        626
+
+  accuracy            50%  (5/10)
+  tokens per correct  1146
+  ms per correct      9076
+
+── PREDICTION vs MEASURED (tolerance ±20%)
+  success                  predicted          30%  measured          50%  error  20.0%  ✓ within tolerance
+  calls                    predicted         3.70  measured         3.10  error  19.4%  ✓ within tolerance

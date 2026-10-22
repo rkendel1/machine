@@ -1,0 +1,40 @@
+═══ AGENT  critic=Model  memory_window=all  max_steps=6  tasks=10×1 ═══
+backend : llama-server@http://127.0.0.1:8080
+model   : models/qwen2.5-0.5b-instruct-q4_k_m.gguf n_ctx=2048
+memory  : llama-server (pid 5516)
+label   : greedy-critic
+template: Chatml
+loop: observation → inference → action(CALC tool | ANSWER) → critic → accept/retry
+actor params: max_tokens=32 temperature=0 seed=Some(42)
+  [✗] task  0 r1 answer     288 (truth   2016)  calls  3  tokens   423  wall 3172.8 ms
+  [✗] task  1 r1 answer   20400 (truth  61200)  calls  4  tokens   630  wall 4778.9 ms
+  [✓] task  2 r1 answer     605 (truth    605)  calls  3  tokens   462  wall 3906.4 ms
+  [✗] task  3 r1 answer    none (truth  21600)  calls  6  tokens  1193  wall 9510.7 ms
+  [✓] task  4 r1 answer     696 (truth    696)  calls  4  tokens   667  wall 4693.1 ms
+  [✓] task  5 r1 answer      52 (truth     52)  calls  3  tokens   407  wall 2816.9 ms
+  [✓] task  6 r1 answer    2304 (truth   2304)  calls  3  tokens   442  wall 3088.9 ms
+  [✓] task  7 r1 answer     760 (truth    760)  calls  4  tokens   654  wall 4943.4 ms
+  [✗] task  8 r1 answer    1500 (truth  10500)  calls  3  tokens   439  wall 3314.8 ms
+  [✗] task  9 r1 answer    none (truth     13)  calls  6  tokens  1283  wall 9564.6 ms
+
+── AGENT SUMMARY (10 episodes) ────────────────────────────────
+  metric                   mean        sd    cv%        p50        p95        min        max
+  success                  0.50      0.53  105.4       0.50       1.00       0.00       1.00
+  steps                    3.10      1.60   51.5       2.50       6.00       2.00       6.00
+  calls                    3.90      1.20   30.7       3.50       6.00       3.00       6.00
+  critic_calls             0.80      0.42   52.7       1.00       1.00       0.00       1.00
+  format_errors            0.50      1.08  216.0       0.00       2.55       0.00       3.00
+  total_tokens              660       321   48.7        546       1242        407       1283
+  wall_ms                  4979      2519   50.6       4300       9540       2817       9565
+  critic_ms                 563       307   54.6        684        805       0.00        828
+  peak_rss_mib              635      2.06    0.3        636        637        630        637
+
+  accuracy            50%  (5/10)
+  tokens per correct  1320
+  ms per correct      9958
+  critic share of time 11.3%   false accepts 3   false rejects 0
+  → compare against `--critic none` and `--critic oracle` with the same tasks: is the accuracy gain worth the extra calls?
+
+── PREDICTION vs MEASURED (tolerance ±20%)
+  success                  predicted          55%  measured          50%  error   5.0%  ✓ within tolerance
+  calls                    predicted         4.50  measured         3.90  error  15.4%  ✓ within tolerance
