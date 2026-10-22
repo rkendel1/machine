@@ -2,6 +2,8 @@
 
 mod advisor;
 mod agent;
+#[allow(dead_code)] // wired into the CLI in the next step
+mod autopilot;
 mod backend;
 mod calc;
 mod env;

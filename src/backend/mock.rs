@@ -9,6 +9,11 @@
 //!   prefill_ms = prompt_tokens * prefill_ms_per_tok
 //!   decode_ms  = completion_tokens * (decode_ms_per_tok + ctx_penalty * context_len)
 //!   both multiplied by (1 ± jitter) and, for sampling, a small overhead.
+//!
+//! Prefix caching (`cache_prompt`) is simulated like llama-server's single
+//! slot: the previous prompt stays resident, and a request with
+//! `cache_prompt=true` only evaluates the tokens after the shared prefix
+//! (at least one). `prompt_tokens` reports evaluated tokens, as the server does.
 
 use super::{Backend, GenParams, Generation};
 use crate::agent;
@@ -25,6 +30,8 @@ pub struct Mock {
     /// Actually sleep so wall clock is real; tests turn this off.
     pub sleep: bool,
     calls: u64,
+    /// Prompt held in the simulated KV slot, for prefix-cache simulation.
+    last_prompt: String,
 }
 
 impl Default for Mock {
@@ -36,6 +43,7 @@ impl Default for Mock {
             jitter: 0.05,
             sleep: true,
             calls: 0,
+            last_prompt: String::new(),
         }
     }
 }
@@ -202,7 +210,19 @@ impl Backend for Mock {
             Rng::new(p.seed.unwrap_or(0) ^ self.calls.wrapping_mul(0xA24B_AED4_963E_E407));
         let text = self.reply(prompt, p, &mut rng);
 
-        let prompt_tokens = approx_tokens(prompt);
+        let full_tokens = approx_tokens(prompt);
+        let prompt_tokens = if p.cache_prompt {
+            let shared = prompt
+                .chars()
+                .zip(self.last_prompt.chars())
+                .take_while(|(a, b)| a == b)
+                .count();
+            let cached = (shared / 4) as u64; // whole tokens only
+            full_tokens.saturating_sub(cached).max(1)
+        } else {
+            full_tokens
+        };
+        self.last_prompt = prompt.to_string();
         let completion_tokens =
             if text.contains(' ') && !text.starts_with("CALC") && !text.starts_with("ANSWER") {
                 text.split_whitespace().count() as u64
@@ -214,7 +234,7 @@ impl Backend for Mock {
         let mut j = || 1.0 + self.jitter * (2.0 * rng.f64() - 1.0);
         let sampling_overhead = if p.temperature > 0.0 { 1.03 } else { 1.0 };
         let prefill_ms = prompt_tokens as f64 * self.prefill_ms_per_tok * j();
-        let ctx = prompt_tokens as f64 + completion_tokens as f64 / 2.0;
+        let ctx = full_tokens as f64 + completion_tokens as f64 / 2.0;
         let decode_ms = completion_tokens as f64
             * (self.decode_ms_per_tok + self.ctx_penalty * ctx)
             * sampling_overhead
@@ -269,6 +289,19 @@ mod tests {
         assert_eq!(a.text, b.text);
         assert_eq!(a.completion_tokens, 16);
         assert!(a.simulated);
+    }
+
+    #[test]
+    fn prefix_cache_skips_shared_prompt() {
+        let mut m = Mock::instant();
+        let mut p = GenParams::default();
+        let prompt = "word ".repeat(200);
+        let cold = m.generate(&prompt, &p).unwrap();
+        p.cache_prompt = true;
+        let warm = m.generate(&prompt, &p).unwrap();
+        assert!(cold.prompt_tokens > 200);
+        assert_eq!(warm.prompt_tokens, 1);
+        assert!(warm.prefill_ms.unwrap() < cold.prefill_ms.unwrap() / 50.0);
     }
 
     #[test]

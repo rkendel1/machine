@@ -169,6 +169,71 @@ fn group_cv(runs: &[Record], metric: &str) -> Option<(f64, usize)> {
     Some((s.cv(), s.n))
 }
 
+/// A single-variable lever the notebook says is worth pulling, in the same
+/// priority order `next` uses. Shared by `next` (prose) and the autopilot
+/// (which turns each lever into an executable `ExperimentSpec`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Lever {
+    /// No measured runs yet.
+    Baseline,
+    /// No repeat group yet (cv = None), or the latest one is noisy (cv > 5%).
+    NoiseFloor { cv: Option<f64> },
+    /// A per-request variable that has never been swept.
+    Sweep(&'static str),
+    /// Quantization has never been compared. Needs a server restart: human only.
+    QuantNeedsRestart,
+    /// No agent episodes yet.
+    AgentBaseline,
+    /// A critic mode ("model" | "oracle") never tried.
+    Critic(&'static str),
+    /// Every agent run used full history.
+    MemoryWindow,
+    /// The agent never ran with prefix caching.
+    AgentCache,
+}
+
+/// Sweep variables in the order `next` recommends them.
+pub const SWEEP_ORDER: [&str; 4] = ["max_tokens", "prompt_tokens", "temperature", "cache_prompt"];
+
+/// Every untried, high-value lever, highest priority first.
+pub fn levers(records: &[Record]) -> Vec<Lever> {
+    let f = facts(records);
+    if f.runs.is_empty() {
+        return vec![Lever::Baseline];
+    }
+    let mut out = Vec::new();
+    match group_cv(&f.runs, "decode_tok_s") {
+        None => out.push(Lever::NoiseFloor { cv: None }),
+        Some((cv, _)) if cv > 0.05 => out.push(Lever::NoiseFloor { cv: Some(cv) }),
+        _ => {}
+    }
+    out.extend(
+        SWEEP_ORDER
+            .iter()
+            .filter(|v| !f.swept.contains(**v))
+            .map(|v| Lever::Sweep(v)),
+    );
+    if !f.labels.iter().any(|l| l.contains('q')) && f.real {
+        out.push(Lever::QuantNeedsRestart);
+    }
+    if f.agents.is_empty() {
+        out.push(Lever::AgentBaseline);
+    } else {
+        for mode in ["model", "oracle"] {
+            if !f.critic_modes.contains(mode) {
+                out.push(Lever::Critic(mode));
+            }
+        }
+        if !f.windows.iter().any(|w| w != "all") {
+            out.push(Lever::MemoryWindow);
+        }
+        if !f.agent_cache {
+            out.push(Lever::AgentCache);
+        }
+    }
+    out
+}
+
 /// One concrete next experiment, with the number that motivates it.
 pub fn next(records: &[Record]) -> (String, String) {
     let f = facts(records);
@@ -408,6 +473,13 @@ mod tests {
         let rs = vec![pred(1, 5.0), pred(1, 50.0), pred(1, 10.0)];
         assert!(progress(&rs)[0].passed);
         assert_eq!(current_lesson(&rs), 2);
+    }
+
+    #[test]
+    fn levers_agree_with_next() {
+        assert_eq!(levers(&[]), vec![Lever::Baseline]);
+        let (_, cmd) = next(&[]);
+        assert!(cmd.contains("machine run"));
     }
 
     #[test]

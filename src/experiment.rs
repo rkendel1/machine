@@ -180,7 +180,7 @@ fn diagnose(rows: &[BTreeMap<String, f64>], warmup: usize, max_tokens: Option<u3
     }
 }
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum SweepVar {
     MaxTokens,
     Temperature,
@@ -198,6 +198,27 @@ impl SweepVar {
             SweepVar::Seed => "seed",
             SweepVar::CachePrompt => "cache_prompt",
         }
+    }
+    /// Spelling on the command line (`--var max-tokens`).
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            SweepVar::MaxTokens => "max-tokens",
+            SweepVar::Temperature => "temperature",
+            SweepVar::PromptTokens => "prompt-tokens",
+            SweepVar::Seed => "seed",
+            SweepVar::CachePrompt => "cache-prompt",
+        }
+    }
+    pub fn from_name(name: &str) -> Option<Self> {
+        [
+            SweepVar::MaxTokens,
+            SweepVar::Temperature,
+            SweepVar::PromptTokens,
+            SweepVar::Seed,
+            SweepVar::CachePrompt,
+        ]
+        .into_iter()
+        .find(|v| v.name() == name)
     }
     pub fn default_metric(self) -> &'static str {
         match self {
