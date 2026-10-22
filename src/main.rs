@@ -2,7 +2,6 @@
 
 mod advisor;
 mod agent;
-#[allow(dead_code)] // execution path lands in the next commit
 mod autopilot;
 mod backend;
 mod calc;
@@ -289,6 +288,7 @@ fn make_lab(c: &Common, quiet: bool) -> Result<lab::Lab> {
         no_predict: c.no_predict,
         quiet,
         template: c.b.template,
+        home: None,
     })
 }
 
@@ -459,7 +459,6 @@ fn main() -> Result<()> {
                 budget_min: budget,
                 max_steps,
                 focus,
-                dry_run,
                 require_approval,
                 tolerance_pct: tolerance,
                 backend_flags: b.flags(),
@@ -469,7 +468,20 @@ fn main() -> Result<()> {
             if dry_run {
                 autopilot::dry_run(&records, &backend_name, &opts);
             } else {
-                bail!("real execution lands in the next commit; use --dry-run");
+                let mut lab = lab::Lab::new(lab::LabOptions {
+                    backend: b.config(),
+                    watch: b.watch.clone(),
+                    label: None,
+                    tags: BTreeMap::new(),
+                    lesson: None,
+                    tolerance_pct: tolerance,
+                    predictions: Vec::new(),
+                    no_predict: false,
+                    quiet: false,
+                    template: b.template,
+                    home: None,
+                })?;
+                autopilot::execute(&mut lab, &opts)?;
             }
         }
         Cmd::Compare { labels, metrics } => {

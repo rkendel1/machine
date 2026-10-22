@@ -297,7 +297,7 @@ fn run_episode(lab: &mut Lab, task: &Task, o: &AgentOpts) -> Result<Episode> {
     Ok(ep)
 }
 
-pub fn run(lab: &mut Lab, o: AgentOpts) -> Result<()> {
+pub fn run(lab: &mut Lab, o: AgentOpts) -> Result<lab::Outcome> {
     let window = o
         .memory_window
         .map(|w| w.to_string())
@@ -408,15 +408,21 @@ pub fn run(lab: &mut Lab, o: AgentOpts) -> Result<()> {
         );
     }
     let mean = lab::means(&rows);
-    lab.score_and_record(
+    let points = vec![String::new()];
+    let results = lab.score_and_record(
         &group,
         &experiment,
         &preds,
-        &[String::new()],
-        &[mean],
+        &points,
+        &[mean.clone()],
         Some("agent"),
     )?;
-    Ok(())
+    Ok(lab::Outcome {
+        group,
+        points,
+        means: vec![mean],
+        results,
+    })
 }
 
 #[cfg(test)]

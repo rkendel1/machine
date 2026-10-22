@@ -3,12 +3,26 @@
 
 use crate::backend::{self, Backend, BackendConfig, BackendKind, GenParams, Generation};
 use crate::memory::{self, Sampler, WatchTarget};
-use crate::notebook::{Kind, Notebook, Record, new_id, now_secs};
+use crate::notebook::{Kind, Notebook, PredictionResult, Record, new_id, now_secs};
 use crate::predict::{self, Prediction};
 use crate::{metrics, stats};
 use anyhow::{Result, bail};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::Duration;
+
+/// What an experiment produced, for callers that act on the numbers
+/// (the autopilot). The notebook rows have already been written.
+#[derive(Debug, Clone)]
+pub struct Outcome {
+    pub group: String,
+    /// Point labels ("" for a single point, "max_tokens=16" … for sweeps).
+    pub points: Vec<String>,
+    /// Mean of every metric at each point (warm-ups excluded).
+    pub means: Vec<BTreeMap<String, f64>>,
+    /// Scored predictions, as recorded in the Prediction row.
+    pub results: Vec<PredictionResult>,
+}
 
 pub struct LabOptions {
     pub backend: BackendConfig,
@@ -21,6 +35,8 @@ pub struct LabOptions {
     pub no_predict: bool,
     pub quiet: bool,
     pub template: Template,
+    /// Notebook directory (default: $MACHINE_HOME or ./.machine).
+    pub home: Option<PathBuf>,
 }
 
 /// How the prompt is wrapped before it reaches the model.
@@ -80,7 +96,13 @@ pub fn parse_watch(s: &str, kind: BackendKind, hint: Option<&'static str>) -> Wa
 
 impl Lab {
     pub fn new(o: LabOptions) -> Result<Self> {
-        let mut backend = backend::build(&o.backend)?;
+        let backend = backend::build(&o.backend)?;
+        Self::with_backend(o, backend)
+    }
+
+    /// Build a lab around an already-constructed backend (tests use an
+    /// instant mock this way).
+    pub fn with_backend(o: LabOptions, mut backend: Box<dyn Backend>) -> Result<Self> {
         let model_info = backend.model_info();
         let target = parse_watch(&o.watch, o.backend.kind, backend.server_process_hint());
         let (watch_pid, watch_desc) = match memory::resolve(&target) {
@@ -108,7 +130,10 @@ impl Lab {
             model_info,
             watch_pid,
             watch_desc,
-            notebook: Notebook::open()?,
+            notebook: match o.home {
+                Some(dir) => Notebook::open_at(dir)?,
+                None => Notebook::open()?,
+            },
             label: o.label,
             tags: o.tags,
             lesson: o.lesson,
@@ -214,7 +239,7 @@ impl Lab {
         points: &[String],
         means: &[BTreeMap<String, f64>],
         var: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<Vec<PredictionResult>> {
         let mut results = Vec::new();
         for p in preds {
             if p.values.len() != points.len() {
@@ -249,11 +274,12 @@ impl Lab {
         }
         let mut rec = self.record(Kind::Prediction, group, experiment);
         rec.var = var.map(str::to_string);
-        rec.predictions = results;
+        rec.predictions = results.clone();
         if means.len() == 1 {
             rec.metrics = means[0].clone();
         }
-        self.notebook.append(&rec)
+        self.notebook.append(&rec)?;
+        Ok(results)
     }
 }
 

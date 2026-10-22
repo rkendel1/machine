@@ -42,7 +42,7 @@ const RUN_TABLE: &[&str] = &[
     "rss_delta_mib",
 ];
 
-pub fn run(lab: &mut Lab, o: RunOpts) -> Result<()> {
+pub fn run(lab: &mut Lab, o: RunOpts) -> Result<lab::Outcome> {
     if o.repeat == 0 {
         bail!("--repeat must be ≥ 1");
     }
@@ -122,8 +122,15 @@ pub fn run(lab: &mut Lab, o: RunOpts) -> Result<()> {
     diagnose(&rows, o.warmup, Some(o.params.max_tokens));
 
     let mean = lab::means(&rows);
-    lab.score_and_record(&group, experiment, &preds, &[String::new()], &[mean], None)?;
-    Ok(())
+    let points = vec![String::new()];
+    let results =
+        lab.score_and_record(&group, experiment, &preds, &points, &[mean.clone()], None)?;
+    Ok(lab::Outcome {
+        group,
+        points,
+        means: vec![mean],
+        results,
+    })
 }
 
 /// Point at the specific numbers that usually explain surprises.
@@ -238,7 +245,7 @@ pub struct SweepOpts {
     pub metric: Option<String>,
 }
 
-pub fn sweep(lab: &mut Lab, o: SweepOpts) -> Result<()> {
+pub fn sweep(lab: &mut Lab, o: SweepOpts) -> Result<lab::Outcome> {
     if o.values.len() < 2 {
         bail!("a sweep needs at least two values");
     }
@@ -368,7 +375,7 @@ pub fn sweep(lab: &mut Lab, o: SweepOpts) -> Result<()> {
     );
 
     let means: Vec<_> = rows.iter().map(|r| lab::means(r)).collect();
-    lab.score_and_record(
+    let results = lab.score_and_record(
         &group,
         &format!("sweep:{}", o.var.name()),
         &preds,
@@ -376,7 +383,12 @@ pub fn sweep(lab: &mut Lab, o: SweepOpts) -> Result<()> {
         &means,
         Some(o.var.name()),
     )?;
-    Ok(())
+    Ok(lab::Outcome {
+        group,
+        points: labels,
+        means,
+        results,
+    })
 }
 
 fn col(rows: &[BTreeMap<String, f64>], k: &str) -> Vec<f64> {
@@ -438,6 +450,36 @@ fn slope_note(var: SweepVar, values: &[String], rows: &[Vec<BTreeMap<String, f64
     );
 }
 
+/// The settings a row was run with, as `key=value` strings: tags (load-time
+/// knobs, agent settings), per-request params, and the backend. The
+/// `source` tag (human vs autopilot) is provenance, not a setting.
+pub fn settings(r: &Record) -> std::collections::BTreeSet<String> {
+    let mut out: std::collections::BTreeSet<String> = r
+        .tags
+        .iter()
+        .filter(|(k, _)| k.as_str() != "source")
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    if let Some(p) = &r.params {
+        out.insert(format!("max_tokens={}", p.max_tokens));
+        out.insert(format!("temp={}", p.temperature));
+        out.insert(format!("cache={}", p.cache_prompt));
+    }
+    out.insert(format!("backend={}", r.backend));
+    out
+}
+
+/// Settings present in one row but not the other (both sides listed).
+pub fn differing_settings(a: &Record, b: &Record) -> Vec<String> {
+    let (a, b) = (settings(a), settings(b));
+    a.symmetric_difference(&b).cloned().collect()
+}
+
+/// One changed setting shows up twice (old and new value).
+pub fn single_variable(diff: &[String]) -> bool {
+    diff.len() <= 2
+}
+
 /// Compare groups of runs by label (or tag) side by side.
 pub fn compare(records: &[Record], labels: &[String], metric_names: &[String]) -> Result<()> {
     if labels.len() < 2 {
@@ -469,35 +511,19 @@ pub fn compare(records: &[Record], labels: &[String], metric_names: &[String]) -
             bail!("no runs with label {l:?}. Run with --label {l} first.");
         }
     }
-    // Single-variable check: what differs between groups besides the label?
-    let describe = |g: &[&Record]| -> String {
-        let r = g[0];
-        let mut parts: Vec<String> = r.tags.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        if let Some(p) = &r.params {
-            parts.push(format!(
-                "max_tokens={} temp={}",
-                p.max_tokens, p.temperature
-            ));
-        }
-        parts.push(r.backend.clone());
-        parts.join(" ")
-    };
     println!("═══ COMPARE ═══");
     for (l, g) in labels.iter().zip(&groups) {
+        let desc: Vec<String> = settings(g[0]).into_iter().collect();
         println!(
             "  {l:<12} n={:<3} {}{}",
             g.len(),
-            describe(g),
+            desc.join(" "),
             if g[0].simulated { "  [SIMULATED]" } else { "" }
         );
     }
-    let base_desc = describe(&groups[0]);
     for (l, g) in labels.iter().zip(&groups).skip(1) {
-        let d = describe(g);
-        let a: std::collections::BTreeSet<&str> = base_desc.split(' ').collect();
-        let b: std::collections::BTreeSet<&str> = d.split(' ').collect();
-        let diff: Vec<_> = a.symmetric_difference(&b).collect();
-        if diff.len() > 2 {
+        let diff = differing_settings(groups[0][0], g[0]);
+        if !single_variable(&diff) {
             println!(
                 "  ⚠ {l} differs from {} in more than one setting: {diff:?} — causal attribution is unclear.",
                 labels[0]

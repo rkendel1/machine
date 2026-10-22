@@ -11,8 +11,10 @@
 
 use crate::advisor::{self, Lever};
 use crate::agent::{self, CriticMode};
+use crate::backend::GenParams;
 use crate::backend::mock::approx_tokens;
-use crate::experiment::SweepVar;
+use crate::experiment::{self, SweepVar};
+use crate::lab::{Lab, Outcome};
 use crate::metrics;
 use crate::notebook::{Kind, Record};
 use crate::predict::Prediction;
@@ -204,17 +206,6 @@ impl ExperimentSpec {
             }
         }
     }
-
-    /// Point labels, in the order predictions are listed (empty = one point).
-    pub fn points(&self) -> Vec<String> {
-        match self {
-            ExperimentSpec::Sweep { var, values, .. } => values
-                .iter()
-                .map(|v| format!("{}={v}", var.name()))
-                .collect(),
-            _ => vec![String::new()],
-        }
-    }
 }
 
 pub fn all_tasks() -> Vec<usize> {
@@ -226,7 +217,6 @@ pub fn all_tasks() -> Vec<usize> {
 pub struct Proposal {
     /// Dedupe key: a lever is tried at most once per session (replications are numbered).
     pub key: String,
-    pub lever: Lever,
     pub spec: ExperimentSpec,
     pub predictions: Vec<Prediction>,
     /// The notebook numbers behind the proposal and predictions.
@@ -442,11 +432,10 @@ pub struct AutopilotState {
     pub focus: Option<Focus>,
     pub bottleneck: String,
     /// Most recent learnings, oldest first (keeps the last 10).
+    #[allow(dead_code)] // used by learning records (next commit)
     pub recent: Vec<String>,
     /// Trials this session whose predictions missed, by key → (spec, measured means per point).
     pub missed: Vec<(String, ExperimentSpec, Vec<Prediction>)>,
-    /// Human-only levers seen (e.g. quantization needs a restart).
-    pub needs_human: BTreeSet<String>,
 }
 
 impl AutopilotState {
@@ -461,7 +450,6 @@ impl AutopilotState {
             bottleneck: String::new(),
             recent: Vec::new(),
             missed: Vec::new(),
-            needs_human: BTreeSet::new(),
         }
     }
 
@@ -469,6 +457,7 @@ impl AutopilotState {
         (self.budget_ms - self.spent_ms).max(0.0)
     }
 
+    #[allow(dead_code)]
     pub fn remember(&mut self, learning: String) {
         self.recent.push(learning);
         if self.recent.len() > 10 {
@@ -566,7 +555,6 @@ pub fn propose_next(state: &AutopilotState, records: &[Record]) -> Option<Propos
         let est = estimate_ms(spec, &cost, records);
         return Some(Proposal {
             key: ckey,
-            lever: Lever::NoiseFloor { cv: None },
             spec: spec.clone(),
             predictions: measured.clone(),
             rationale: format!(
@@ -773,7 +761,6 @@ fn build(lever: Lever, key: String, cost: &CostModel, records: &[Record]) -> Opt
     let est_ms = estimate_ms(&spec, cost, records);
     Some(Proposal {
         key,
-        lever,
         spec,
         predictions,
         rationale,
@@ -861,7 +848,7 @@ pub struct Options {
     pub budget_min: f64,
     pub max_steps: usize,
     pub focus: Option<Focus>,
-    pub dry_run: bool,
+    #[allow(dead_code)] // --require-approval lands in a later commit
     pub require_approval: bool,
     pub tolerance_pct: f64,
     /// e.g. "--backend llama-server --template chatml " — prefixed to every printed command.
@@ -879,6 +866,7 @@ pub fn relevant(records: &[Record], backend_name: &str) -> Vec<Record> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)] // Interrupted/Declined land with approval + SIGINT handling
 pub enum Stop {
     Budget { next_ms: f64 },
     MaxSteps,
@@ -1013,6 +1001,160 @@ pub fn dry_run(all: &[Record], backend_name: &str, opts: &Options) -> Vec<Propos
         "   (a real run re-plans after every trial from the new measurements, so later trials may differ)"
     );
     out
+}
+
+/// Run one spec through the same code paths the CLI uses. The lab's label,
+/// lesson, tolerance and predictions are set exactly as the printed command
+/// would set them, so the notebook rows are indistinguishable from a human
+/// run except for the `source=autopilot` tag.
+pub fn execute_spec(lab: &mut Lab, p: &Proposal, tolerance_pct: f64) -> Result<Outcome> {
+    lab.label = Some(p.label.clone());
+    lab.lesson = Some(p.lesson);
+    lab.cli_predictions = p.predictions.clone();
+    lab.no_predict = false;
+    lab.tolerance_pct = tolerance_pct;
+    lab.tags.insert("source".into(), "autopilot".into());
+    let params = |max_tokens: u32, ignore_eos: bool| GenParams {
+        max_tokens,
+        temperature: 0.0,
+        seed: Some(42),
+        cache_prompt: false,
+        stop: Vec::new(),
+        ignore_eos,
+    };
+    match &p.spec {
+        ExperimentSpec::Run {
+            repeat,
+            warmup,
+            max_tokens,
+        } => {
+            lab.quiet = false;
+            experiment::run(
+                lab,
+                experiment::RunOpts {
+                    prompt: experiment::DEFAULT_PROMPT.into(),
+                    params: params(*max_tokens, true),
+                    repeat: *repeat,
+                    warmup: *warmup,
+                    pad_to: None,
+                    show_text: false,
+                },
+            )
+        }
+        ExperimentSpec::Sweep {
+            var,
+            values,
+            repeat,
+            warmup,
+            max_tokens,
+            metric,
+        } => {
+            lab.quiet = true;
+            experiment::sweep(
+                lab,
+                experiment::SweepOpts {
+                    var: *var,
+                    values: values.clone(),
+                    metric: Some(metric.to_string()),
+                    base: experiment::RunOpts {
+                        prompt: experiment::DEFAULT_PROMPT.into(),
+                        params: params(*max_tokens, true),
+                        repeat: *repeat,
+                        warmup: *warmup,
+                        pad_to: None,
+                        show_text: false,
+                    },
+                },
+            )
+        }
+        ExperimentSpec::Agent {
+            settings, tasks, ..
+        } => {
+            lab.quiet = false;
+            let mut gp = params(32, false); // `machine agent` default: one line per reply
+            gp.temperature = settings.temperature;
+            gp.cache_prompt = settings.cache_prompt;
+            agent::run(
+                lab,
+                agent::AgentOpts {
+                    tasks: tasks.clone(),
+                    repeat: 1,
+                    max_steps: 6,
+                    critic: settings.critic,
+                    memory_window: settings.memory_window,
+                    params: gp,
+                    verbose: false,
+                },
+            )
+        }
+    }
+}
+
+/// Measured means shaped like the predictions, for confirm-replications and learnings.
+pub fn measured_like(preds: &[Prediction], o: &Outcome) -> Vec<Prediction> {
+    preds
+        .iter()
+        .filter_map(|p| {
+            let values: Option<Vec<f64>> =
+                o.means.iter().map(|m| m.get(&p.metric).copied()).collect();
+            Some(Prediction {
+                metric: p.metric.clone(),
+                values: values?,
+            })
+        })
+        .collect()
+}
+
+/// What happened in one autopilot session.
+#[derive(Debug)]
+pub struct Session {
+    pub trials: Vec<(Proposal, Outcome)>,
+    pub stop: Stop,
+    pub spent_ms: f64,
+}
+
+/// The real loop: observe → propose → (approve) → run → score → learn → repeat.
+pub fn execute(lab: &mut Lab, opts: &Options) -> Result<Session> {
+    let backend_name = lab.backend.name();
+    let mut state = AutopilotState::new(opts.budget_min, opts.max_steps, opts.focus);
+    let start = std::time::Instant::now();
+    let all = lab.notebook.all()?;
+    print_header(&relevant(&all, &backend_name), &backend_name, opts, false);
+    let mut trials = Vec::new();
+    let stop = loop {
+        let records = relevant(&lab.notebook.all()?, &backend_name);
+        state.bottleneck = CostModel::from_records(&records).bottleneck();
+        state.spent_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let p = propose_next(&state, &records);
+        if let Some(stop) = gate(&state, p.as_ref()) {
+            break stop;
+        }
+        let Some(p) = p else { break Stop::NothingLeft };
+        print_proposal(state.steps + 1, &p, opts);
+        println!();
+        let outcome = execute_spec(lab, &p, opts.tolerance_pct)?;
+        state.steps += 1;
+        state.tried.insert(p.key.clone());
+        if outcome.results.iter().any(|r| !r.passed) {
+            state.missed.push((
+                p.key.clone(),
+                p.spec.clone(),
+                measured_like(&p.predictions, &outcome),
+            ));
+        }
+        trials.push((p, outcome));
+    };
+    let spent_ms = start.elapsed().as_secs_f64() * 1000.0;
+    println!(
+        "\n═══ AUTOPILOT DONE: {} trial(s) in {}. Stopped: {stop}. ═══",
+        trials.len(),
+        fmt_ms(spent_ms)
+    );
+    Ok(Session {
+        trials,
+        stop,
+        spent_ms,
+    })
 }
 
 #[cfg(test)]

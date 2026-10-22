@@ -90,11 +90,19 @@ pub struct Notebook {
 
 impl Notebook {
     pub fn open() -> Result<Self> {
-        let dir = home();
+        Self::open_at(home())
+    }
+
+    pub fn open_at(dir: PathBuf) -> Result<Self> {
         fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
         Ok(Self {
             path: dir.join("notebook.jsonl"),
         })
+    }
+
+    /// Directory holding the notebook (sibling files such as learnings.jsonl live here).
+    pub fn dir(&self) -> PathBuf {
+        self.path.parent().map(PathBuf::from).unwrap_or_else(home)
     }
 
     pub fn path(&self) -> &PathBuf {
