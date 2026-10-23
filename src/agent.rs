@@ -199,6 +199,7 @@ fn run_episode(lab: &mut Lab, task: &Task, o: &AgentOpts) -> Result<Episode> {
         "actor_calls",
         "critic_calls",
         "format_errors",
+        "tool_errors",
         "critic_ms",
         "critic_false_reject",
         "critic_false_accept",
@@ -247,7 +248,10 @@ fn run_episode(lab: &mut Lab, task: &Task, o: &AgentOpts) -> Result<Episode> {
         match action {
             Action::Calc(expr) => match calc::eval(&expr) {
                 Ok(v) => history.push(format!("CALC: {expr} -> {v}")),
-                Err(e) => history.push(format!("CALC: {expr} -> ERROR: {e}")),
+                Err(e) => {
+                    ep.add("tool_errors", 1.0);
+                    history.push(format!("CALC: {expr} -> ERROR: {e}"))
+                }
             },
             Action::Invalid(t) => {
                 ep.add("format_errors", 1.0);

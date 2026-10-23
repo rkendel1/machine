@@ -53,6 +53,11 @@ pub const AGENT_METRICS: &[(&str, &str, &str)] = &[
     ("actor_calls", "n", "inference calls that chose actions"),
     ("critic_calls", "n", "inference calls spent verifying"),
     (
+        "tool_errors",
+        "n",
+        "CALC expressions the calculator rejected (recorded since the scientist release)",
+    ),
+    (
         "format_errors",
         "n",
         "replies that matched neither CALC: nor ANSWER:",

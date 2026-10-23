@@ -107,6 +107,8 @@ pub enum ExperimentSpec {
         warmup: usize,
         max_tokens: u32,
         metric: &'static str,
+        /// `--pad-to N`: hold the prompt at ~N tokens (fixed for every point).
+        pad_to: Option<usize>,
     },
     /// `machine agent [--critic ..] [--memory-window ..] [--cache-prompt] [--temperature ..]`
     Agent {
@@ -179,10 +181,12 @@ impl ExperimentSpec {
                 warmup,
                 max_tokens,
                 metric,
+                pad_to,
             } => format!(
-                "machine sweep --var {} --values {} --repeat {repeat} --warmup {warmup} --max-tokens {max_tokens} --ignore-eos --metric {metric}",
+                "machine sweep --var {} --values {} --repeat {repeat} --warmup {warmup} --max-tokens {max_tokens} --ignore-eos --metric {metric}{}",
                 var.cli_name(),
-                values.join(",")
+                values.join(","),
+                pad_to.map(|n| format!(" --pad-to {n}")).unwrap_or_default()
             ),
             ExperimentSpec::Agent {
                 settings, tasks, ..
@@ -665,6 +669,7 @@ fn build(lever: Lever, key: String, cost: &CostModel, records: &[Record]) -> Opt
                     warmup: 1,
                     max_tokens,
                     metric,
+                    pad_to: None,
                 },
                 vec![pred(metric, predicted)],
                 format!("{why}{prior_note}"),
@@ -807,18 +812,18 @@ pub fn estimate_ms(spec: &ExperimentSpec, cost: &CostModel, records: &[Record]) 
             repeat,
             warmup,
             max_tokens,
+            pad_to,
             ..
         } => {
+            let prompt = pad_to.map(|n| n as f64).unwrap_or(cost.base_prompt_tokens);
             let per_point: Vec<f64> = values
                 .iter()
                 .map(|v| match var {
-                    SweepVar::MaxTokens => {
-                        cost.call_ms(cost.base_prompt_tokens, v.parse().unwrap_or(64.0))
-                    }
+                    SweepVar::MaxTokens => cost.call_ms(prompt, v.parse().unwrap_or(64.0)),
                     SweepVar::PromptTokens => {
                         cost.call_ms(v.parse().unwrap_or(64.0), *max_tokens as f64)
                     }
-                    _ => cost.call_ms(cost.base_prompt_tokens, *max_tokens as f64),
+                    _ => cost.call_ms(prompt, *max_tokens as f64),
                 })
                 .collect();
             per_point.iter().sum::<f64>() * *repeat as f64 + per_point[0] * *warmup as f64
@@ -911,7 +916,13 @@ pub fn gate(state: &AutopilotState, p: Option<&Proposal>) -> Option<Stop> {
     None
 }
 
-pub fn print_header(records: &[Record], backend_name: &str, opts: &Options, dry: bool) {
+pub fn print_header(
+    records: &[Record],
+    backend_name: &str,
+    opts: &Options,
+    dry: bool,
+    planner: &str,
+) {
     let cost = CostModel::from_records(records);
     println!(
         "═══ AUTOPILOT{} ═══",
@@ -922,6 +933,7 @@ pub fn print_header(records: &[Record], backend_name: &str, opts: &Options, dry:
         }
     );
     println!("backend   : {backend_name}");
+    println!("planner   : {planner}");
     println!(
         "notebook  : {} rows from this backend",
         records
@@ -971,7 +983,7 @@ pub fn print_proposal(n: usize, p: &Proposal, opts: &Options) {
 /// no writes. Each trial is assumed to take its estimated time.
 pub fn dry_run(all: &[Record], backend_name: &str, opts: &Options) -> Vec<Proposal> {
     let records = relevant(all, backend_name);
-    print_header(&records, backend_name, opts, true);
+    print_header(&records, backend_name, opts, true, Checklist.name());
     let mut state = AutopilotState::new(opts.budget_min, opts.max_steps, opts.focus);
     let mut out = Vec::new();
     let stop = loop {
@@ -1046,6 +1058,7 @@ pub fn execute_spec(lab: &mut Lab, p: &Proposal, tolerance_pct: f64) -> Result<O
             warmup,
             max_tokens,
             metric,
+            pad_to,
         } => {
             lab.quiet = true;
             experiment::sweep(
@@ -1059,7 +1072,7 @@ pub fn execute_spec(lab: &mut Lab, p: &Proposal, tolerance_pct: f64) -> Result<O
                         params: params(*max_tokens, true),
                         repeat: *repeat,
                         warmup: *warmup,
-                        pad_to: None,
+                        pad_to: *pad_to,
                         show_text: false,
                     },
                 },
@@ -1132,11 +1145,11 @@ fn first_run_row<'a>(records: &'a [Record], group: &str) -> Option<&'a Record> {
 pub fn interpret(
     p: &Proposal,
     o: &Outcome,
-    before: &[Record],
-    after: &[Record],
+    (before, after): (&[Record], &[Record]),
     state: &AutopilotState,
     opts: &Options,
     lab: &Lab,
+    planner: &mut dyn Planner,
 ) -> Learning {
     let mut prediction = std::collections::BTreeMap::new();
     let mut actual = std::collections::BTreeMap::new();
@@ -1276,7 +1289,7 @@ pub fn interpret(
 
     // What the numbers now suggest: the proposer's next pick on the updated notebook.
     // The state already lists this trial as tried (and as missed, if it missed).
-    let next_priority = match propose_next(state, after) {
+    let next_priority = match planner.propose(state, after) {
         Some(n) => format!(
             "{}: {}",
             n.key,
@@ -1402,17 +1415,56 @@ pub fn execute(lab: &mut Lab, opts: &Options) -> Result<Session> {
     res
 }
 
+/// Chooses the next trial. The autopilot's deterministic checklist is one
+/// planner; the scientist's information-gain selector is another. Both emit
+/// ordinary validated `Proposal`s, so execution, scoring and learning
+/// records are shared.
+pub trait Planner {
+    fn name(&self) -> &'static str;
+    fn propose(&mut self, state: &AutopilotState, records: &[Record]) -> Option<Proposal>;
+    /// Called after each trial with the updated, backend-filtered notebook.
+    fn after_trial(&mut self, _records: &[Record]) {}
+}
+
+/// The fixed lever list (`propose_next`).
+pub struct Checklist;
+
+impl Planner for Checklist {
+    fn name(&self) -> &'static str {
+        "deterministic checklist"
+    }
+    fn propose(&mut self, state: &AutopilotState, records: &[Record]) -> Option<Proposal> {
+        propose_next(state, records)
+    }
+}
+
 /// `execute` with the approval prompt injected (tests answer it in code).
 pub fn execute_with(
     lab: &mut Lab,
     opts: &Options,
     approve: &mut dyn FnMut(&Proposal) -> Approval,
 ) -> Result<Session> {
+    execute_planned(lab, opts, approve, &mut Checklist)
+}
+
+/// The shared loop, with any planner.
+pub fn execute_planned(
+    lab: &mut Lab,
+    opts: &Options,
+    approve: &mut dyn FnMut(&Proposal) -> Approval,
+    planner: &mut dyn Planner,
+) -> Result<Session> {
     let backend_name = lab.backend.name();
     let mut state = AutopilotState::new(opts.budget_min, opts.max_steps, opts.focus);
     let start = std::time::Instant::now();
     let all = lab.notebook.all()?;
-    print_header(&relevant(&all, &backend_name), &backend_name, opts, false);
+    print_header(
+        &relevant(&all, &backend_name),
+        &backend_name,
+        opts,
+        false,
+        planner.name(),
+    );
     let mut trials = Vec::new();
     let stop = loop {
         if interrupt::requested() {
@@ -1421,7 +1473,7 @@ pub fn execute_with(
         let records = relevant(&lab.notebook.all()?, &backend_name);
         state.bottleneck = CostModel::from_records(&records).bottleneck();
         state.spent_ms = start.elapsed().as_secs_f64() * 1000.0;
-        let p = propose_next(&state, &records);
+        let p = planner.propose(&state, &records);
         if let Some(stop) = gate(&state, p.as_ref()) {
             break stop;
         }
@@ -1453,7 +1505,8 @@ pub fn execute_with(
         }
         // Always written, even when interrupted: a finished trial is never lost.
         let after = relevant(&lab.notebook.all()?, &backend_name);
-        let l = interpret(&p, &outcome, &records, &after, &state, opts, lab);
+        planner.after_trial(&after);
+        let l = interpret(&p, &outcome, (&records, &after), &state, opts, lab, planner);
         learnings::append(&lab.notebook, &l)?;
         println!(
             "\n── LEARNING ({})",
