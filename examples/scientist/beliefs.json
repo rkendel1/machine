@@ -1,0 +1,657 @@
+{
+  "version": 1,
+  "backend": "llama-server@http://127.0.0.1:8080",
+  "simulated": false,
+  "fitted_at": "2026-10-23T00:37:23Z",
+  "run_rows": 66,
+  "agent_episodes": 85,
+  "beliefs": [
+    {
+      "key": "prefill.fixed_ms",
+      "what": "fixed prefill cost per call, paid even when ~0 tokens are evaluated",
+      "est": {
+        "value": 30.66353155339803,
+        "lo": 27.513640857605058,
+        "hi": 37.945762596259655
+      },
+      "unit": "ms",
+      "n": 66,
+      "status": "uncertain",
+      "method": "Theil–Sen over 66 rows at 6 distinct lengths [1–852], R² 0.977",
+      "effect": false
+    },
+    {
+      "key": "prefill.ms_per_token",
+      "what": "prefill cost per evaluated prompt token",
+      "est": {
+        "value": 6.146409587378642,
+        "lo": 5.918428389595426,
+        "hi": 6.288706788250629
+      },
+      "unit": "ms",
+      "n": 66,
+      "status": "known",
+      "method": "Theil–Sen over 66 rows at 6 distinct lengths [1–852], R² 0.977",
+      "effect": false
+    },
+    {
+      "key": "decode.ms_per_token",
+      "what": "decode cost per generated token",
+      "est": {
+        "value": 36.139683035714285,
+        "lo": 35.66493794642857,
+        "hi": 36.74310714285715
+      },
+      "unit": "ms",
+      "n": 66,
+      "status": "known",
+      "method": "Theil–Sen over 66 rows at 6 distinct lengths [8–128], R² 0.991",
+      "effect": false
+    },
+    {
+      "key": "decode.fixed_ms",
+      "what": "fixed decode cost per call",
+      "est": {
+        "value": -32.13457142857146,
+        "lo": -45.51192416666662,
+        "hi": -13.586045000000407
+      },
+      "unit": "ms",
+      "n": 66,
+      "status": "known",
+      "method": "Theil–Sen over 66 rows at 6 distinct lengths [8–128], R² 0.991",
+      "effect": true
+    },
+    {
+      "key": "overhead.ms",
+      "what": "wall − prefill − decode per call (HTTP, JSON, scheduling)",
+      "est": {
+        "value": 1.9400346515151354,
+        "lo": 1.6806869303030323,
+        "hi": 2.366831270454508
+      },
+      "unit": "ms",
+      "n": 66,
+      "status": "known",
+      "method": "bootstrap mean over all measured calls",
+      "effect": true
+    },
+    {
+      "key": "noise.decode_cv",
+      "what": "run-to-run spread of decode tok/s (median cv over repeat groups; interval = min–max)",
+      "est": {
+        "value": 0.023168383935633446,
+        "lo": 0.022104662265164856,
+        "hi": 0.02423210560610204
+      },
+      "unit": "%",
+      "n": 2,
+      "status": "uncertain",
+      "method": "2 repeat groups with ≥5 runs",
+      "effect": false
+    },
+    {
+      "key": "effect.cache_hit.prefill_ms",
+      "what": "prefill change when the default prompt is already cached (cache_prompt false → true)",
+      "est": {
+        "value": -179.47719999999998,
+        "lo": -194.8076,
+        "hi": -164.04046499999998
+      },
+      "unit": "Δms",
+      "n": 10,
+      "status": "known",
+      "method": "bootstrap difference of means, cache sweeps at the default prompt",
+      "effect": true
+    },
+    {
+      "key": "interaction.cache_x_prompt",
+      "what": "extra cache-hit prefill per token of cached prompt (0 = a hit is equally cheap for long prompts)",
+      "est": {
+        "value": 0.010249999999999995,
+        "lo": -0.0017871287128712905,
+        "hi": 0.025044059405940594
+      },
+      "unit": "Δms",
+      "n": 8,
+      "status": "negligible",
+      "method": "slope of hit prefill vs cached prompt length across cache sweeps at ≥2 lengths (≥2× apart); ≈0 if under 10% of the per-token prefill cost",
+      "effect": true,
+      "negligible": 0.6146409587378643
+    },
+    {
+      "key": "effect.temperature.decode_tok_s",
+      "what": "decode speed change from greedy to sampling (temperature 0 → 0.8)",
+      "est": {
+        "value": 0.523091548284377,
+        "lo": -0.3646673022936105,
+        "hi": 1.4613978046684268
+      },
+      "unit": "Δtok/s",
+      "n": 10,
+      "status": "uncertain",
+      "method": "bootstrap difference of means, temperature sweeps; ≈0 if within 2× the decode noise floor",
+      "effect": true,
+      "negligible": 1.3110261605892533
+    },
+    {
+      "key": "effect.quant.decode_tok_s",
+      "what": "decode speed change across quantizations (q4_k_m → q8_0); load-time knob, measured by you",
+      "est": {
+        "value": -3.1789748052201787,
+        "lo": -3.6583296668679557,
+        "hi": -2.6492134027993557
+      },
+      "unit": "Δtok/s",
+      "n": 16,
+      "status": "known",
+      "method": "bootstrap difference of means over runs tagged quant=…",
+      "effect": true
+    },
+    {
+      "key": "effect.quant.peak_rss_mib",
+      "what": "server memory change across quantizations (q4_k_m → q8_0); load-time knob, measured by you",
+      "est": {
+        "value": 144.74658203125,
+        "lo": 144.61328125,
+        "hi": 145.01318359375
+      },
+      "unit": "ΔMiB",
+      "n": 16,
+      "status": "known",
+      "method": "bootstrap difference of means over runs tagged quant=…",
+      "effect": true
+    },
+    {
+      "key": "agent.baseline.success",
+      "what": "success rate of the baseline agent (greedy, no critic, full history, no cache)",
+      "est": {
+        "value": 0.5,
+        "lo": 0.2992949144298199,
+        "hi": 0.7007050855701801
+      },
+      "unit": "rate",
+      "n": 20,
+      "status": "uncertain",
+      "method": "Wilson 95% interval over 10-task runs",
+      "effect": false
+    },
+    {
+      "key": "agent.baseline.wall_ms",
+      "what": "wall time per task of the baseline agent",
+      "est": {
+        "value": 4548.316044050001,
+        "lo": 3630.18997335875,
+        "hi": 5720.998337131251
+      },
+      "unit": "ms",
+      "n": 20,
+      "status": "uncertain",
+      "method": "bootstrap mean over 10-task runs",
+      "effect": false
+    },
+    {
+      "key": "effect.agent.critic=model.success",
+      "what": "success change from baseline when only critic=model changes",
+      "est": {
+        "value": 0.0,
+        "lo": -0.4024999999999999,
+        "hi": 0.40125000000000033
+      },
+      "unit": "pts",
+      "n": 30,
+      "status": "uncertain",
+      "method": "bootstrap difference of per-episode means vs the baseline config",
+      "effect": true
+    },
+    {
+      "key": "effect.agent.critic=model.calls",
+      "what": "calls per task change from baseline when only critic=model changes",
+      "est": {
+        "value": 0.7999999999999998,
+        "lo": -0.10125000000000006,
+        "hi": 1.7000000000000002
+      },
+      "unit": "Δcalls",
+      "n": 30,
+      "status": "uncertain",
+      "method": "bootstrap difference of per-episode means vs the baseline config",
+      "effect": true
+    },
+    {
+      "key": "effect.agent.critic=model.wall_ms",
+      "what": "wall per task change from baseline when only critic=model changes",
+      "est": {
+        "value": 430.73355484999865,
+        "lo": -1278.5966514000013,
+        "hi": 2249.0095429875
+      },
+      "unit": "Δms",
+      "n": 30,
+      "status": "uncertain",
+      "method": "bootstrap difference of per-episode means vs the baseline config",
+      "effect": true
+    },
+    {
+      "key": "effect.agent.critic=oracle.success",
+      "what": "success change from baseline when only critic=oracle changes",
+      "est": {
+        "value": 0.0,
+        "lo": -0.4024999999999999,
+        "hi": 0.40125000000000033
+      },
+      "unit": "pts",
+      "n": 30,
+      "status": "uncertain",
+      "method": "bootstrap difference of per-episode means vs the baseline config",
+      "effect": true
+    },
+    {
+      "key": "effect.agent.critic=oracle.calls",
+      "what": "calls per task change from baseline when only critic=oracle changes",
+      "est": {
+        "value": 1.1,
+        "lo": -0.3025000000000002,
+        "hi": 2.4512500000000004
+      },
+      "unit": "Δcalls",
+      "n": 30,
+      "status": "uncertain",
+      "method": "bootstrap difference of per-episode means vs the baseline config",
+      "effect": true
+    },
+    {
+      "key": "effect.agent.critic=oracle.wall_ms",
+      "what": "wall per task change from baseline when only critic=oracle changes",
+      "est": {
+        "value": 1937.8261285499993,
+        "lo": -719.7306391437486,
+        "hi": 4294.083308085002
+      },
+      "unit": "Δms",
+      "n": 30,
+      "status": "uncertain",
+      "method": "bootstrap difference of per-episode means vs the baseline config",
+      "effect": true
+    },
+    {
+      "key": "effect.agent.memory_window=1.success",
+      "what": "success change from baseline when only memory_window=1 changes",
+      "est": {
+        "value": -0.2,
+        "lo": -0.55125,
+        "hi": 0.1512500000000003
+      },
+      "unit": "pts",
+      "n": 30,
+      "status": "uncertain",
+      "method": "bootstrap difference of per-episode means vs the baseline config",
+      "effect": true
+    },
+    {
+      "key": "effect.agent.memory_window=1.calls",
+      "what": "calls per task change from baseline when only memory_window=1 changes",
+      "est": {
+        "value": 0.7999999999999998,
+        "lo": -0.6012499999999996,
+        "hi": 2.1999999999999997
+      },
+      "unit": "Δcalls",
+      "n": 30,
+      "status": "uncertain",
+      "method": "bootstrap difference of per-episode means vs the baseline config",
+      "effect": true
+    },
+    {
+      "key": "effect.agent.memory_window=1.wall_ms",
+      "what": "wall per task change from baseline when only memory_window=1 changes",
+      "est": {
+        "value": 2342.761517249999,
+        "lo": -673.1068748387506,
+        "hi": 5512.692299228751
+      },
+      "unit": "Δms",
+      "n": 30,
+      "status": "uncertain",
+      "method": "bootstrap difference of per-episode means vs the baseline config",
+      "effect": true
+    },
+    {
+      "key": "effect.agent.cache_prompt.success",
+      "what": "success change from baseline when only cache_prompt changes",
+      "est": {
+        "value": 0.0,
+        "lo": -0.30125,
+        "hi": 0.30000000000000004
+      },
+      "unit": "pts",
+      "n": 40,
+      "status": "uncertain",
+      "method": "bootstrap difference of per-episode means vs the baseline config",
+      "effect": true
+    },
+    {
+      "key": "effect.agent.cache_prompt.calls",
+      "what": "calls per task change from baseline when only cache_prompt changes",
+      "est": {
+        "value": 0.0,
+        "lo": -0.75125,
+        "hi": 0.9012500000000002
+      },
+      "unit": "Δcalls",
+      "n": 40,
+      "status": "uncertain",
+      "method": "bootstrap difference of per-episode means vs the baseline config",
+      "effect": true
+    },
+    {
+      "key": "effect.agent.cache_prompt.wall_ms",
+      "what": "wall per task change from baseline when only cache_prompt changes",
+      "est": {
+        "value": -867.2827216500013,
+        "lo": -3340.123759157501,
+        "hi": 3018.589236979999
+      },
+      "unit": "Δms",
+      "n": 40,
+      "status": "uncertain",
+      "method": "bootstrap difference of per-episode means vs the baseline config",
+      "effect": true
+    },
+    {
+      "key": "effect.agent.temperature=0.8.success",
+      "what": "success change from baseline when only temperature=0.8 changes",
+      "est": {
+        "value": -0.5,
+        "lo": -0.7,
+        "hi": -0.3
+      },
+      "unit": "pts",
+      "n": 30,
+      "status": "known",
+      "method": "bootstrap difference of per-episode means vs the baseline config",
+      "effect": true
+    },
+    {
+      "key": "effect.agent.temperature=0.8.calls",
+      "what": "calls per task change from baseline when only temperature=0.8 changes",
+      "est": {
+        "value": 1.4,
+        "lo": 0.19874999999999976,
+        "hi": 2.5999999999999996
+      },
+      "unit": "Δcalls",
+      "n": 30,
+      "status": "known",
+      "method": "bootstrap difference of per-episode means vs the baseline config",
+      "effect": true
+    },
+    {
+      "key": "effect.agent.temperature=0.8.wall_ms",
+      "what": "wall per task change from baseline when only temperature=0.8 changes",
+      "est": {
+        "value": 2360.725780249999,
+        "lo": 253.32856818874896,
+        "hi": 4391.947401545001
+      },
+      "unit": "Δms",
+      "n": 30,
+      "status": "known",
+      "method": "bootstrap difference of per-episode means vs the baseline config",
+      "effect": true
+    }
+  ],
+  "agent_configs": [
+    {
+      "key": "critic=model window=all cache=false temp=0",
+      "critic": "model",
+      "memory_window": "all",
+      "cache_prompt": false,
+      "temperature": 0.0,
+      "episodes": 10,
+      "runs": 1,
+      "success": {
+        "value": 0.5,
+        "lo": 0.23658959361548731,
+        "hi": 0.7634104063845126
+      },
+      "calls": {
+        "value": 3.9,
+        "lo": 3.2975,
+        "hi": 4.5
+      },
+      "wall_ms": {
+        "value": 4979.0495989,
+        "lo": 3811.5518909625,
+        "hi": 6328.532805227501
+      },
+      "prompt_per_call": 160.23076923076923,
+      "format_errors_per_task": 0.5,
+      "critic_false_accepts": 3.0
+    },
+    {
+      "key": "critic=none window=1 cache=false temp=0",
+      "critic": "none",
+      "memory_window": "1",
+      "cache_prompt": false,
+      "temperature": 0.0,
+      "episodes": 10,
+      "runs": 1,
+      "success": {
+        "value": 0.3,
+        "lo": 0.10778928748621183,
+        "hi": 0.6032267800204347
+      },
+      "calls": {
+        "value": 3.9,
+        "lo": 2.7,
+        "hi": 5.1
+      },
+      "wall_ms": {
+        "value": 6891.0775613000005,
+        "lo": 3848.80725169,
+        "hi": 9807.51272246
+      },
+      "prompt_per_call": 165.74358974358975,
+      "format_errors_per_task": 0.7,
+      "critic_false_accepts": 0.0
+    },
+    {
+      "key": "critic=none window=all cache=false temp=0",
+      "critic": "none",
+      "memory_window": "all",
+      "cache_prompt": false,
+      "temperature": 0.0,
+      "episodes": 20,
+      "runs": 2,
+      "success": {
+        "value": 0.5,
+        "lo": 0.2992949144298199,
+        "hi": 0.7007050855701801
+      },
+      "calls": {
+        "value": 3.1,
+        "lo": 2.59875,
+        "hi": 3.75
+      },
+      "wall_ms": {
+        "value": 4548.316044050001,
+        "lo": 3630.18997335875,
+        "hi": 5720.998337131251
+      },
+      "prompt_per_call": 174.03225806451613,
+      "format_errors_per_task": 0.5,
+      "critic_false_accepts": 0.0
+    },
+    {
+      "key": "critic=none window=all cache=false temp=0.8",
+      "critic": "none",
+      "memory_window": "all",
+      "cache_prompt": false,
+      "temperature": 0.8,
+      "episodes": 10,
+      "runs": 1,
+      "success": {
+        "value": 0.0,
+        "lo": 0.0,
+        "hi": 0.2775401687666165
+      },
+      "calls": {
+        "value": 4.5,
+        "lo": 3.4,
+        "hi": 5.6
+      },
+      "wall_ms": {
+        "value": 6909.0418243,
+        "lo": 5003.977786575,
+        "hi": 8776.56033793
+      },
+      "prompt_per_call": 188.2888888888889,
+      "format_errors_per_task": 1.1,
+      "critic_false_accepts": 0.0
+    },
+    {
+      "key": "critic=none window=all cache=true temp=0",
+      "critic": "none",
+      "memory_window": "all",
+      "cache_prompt": true,
+      "temperature": 0.0,
+      "episodes": 20,
+      "runs": 2,
+      "success": {
+        "value": 0.5,
+        "lo": 0.2992949144298199,
+        "hi": 0.7007050855701801
+      },
+      "calls": {
+        "value": 3.1,
+        "lo": 2.59875,
+        "hi": 3.75
+      },
+      "wall_ms": {
+        "value": 3681.0333224,
+        "lo": 1802.4599429700006,
+        "hi": 7169.445992715004
+      },
+      "prompt_per_call": 32.903225806451616,
+      "format_errors_per_task": 0.5,
+      "critic_false_accepts": 0.0
+    },
+    {
+      "key": "critic=oracle window=all cache=false temp=0",
+      "critic": "oracle",
+      "memory_window": "all",
+      "cache_prompt": false,
+      "temperature": 0.0,
+      "episodes": 10,
+      "runs": 1,
+      "success": {
+        "value": 0.5,
+        "lo": 0.23658959361548731,
+        "hi": 0.7634104063845126
+      },
+      "calls": {
+        "value": 4.2,
+        "lo": 3.0,
+        "hi": 5.202500000000001
+      },
+      "wall_ms": {
+        "value": 6486.142172600001,
+        "lo": 4449.153829090001,
+        "hi": 8302.68836093
+      },
+      "prompt_per_call": 185.16666666666666,
+      "format_errors_per_task": 0.6,
+      "critic_false_accepts": 0.0
+    }
+  ],
+  "anomalies": [
+    {
+      "key": "prefill.per_token_model_fails_on_cache_hits",
+      "title": "A per-token-only prefill model fails on cache hits",
+      "evidence": "8 cache-hit calls evaluated 1 token(s) yet prefill took 34.7 ms on average; 7.23 ms/token predicts 7.2 ms (5× too low).",
+      "consequence": "Model prefill as fixed + per-token: 30.7 ms + 6.15 ms/token. The fixed part bounds what caching can save per call."
+    },
+    {
+      "key": "decode.negative_fixed_cost",
+      "title": "Decode has a negative fixed cost",
+      "evidence": "decode_ms ≈ -32.1 ms + 36.14 ms × output tokens; the intercept is about 0.9 tokens' worth below zero.",
+      "consequence": "Physically a call can't save time, so the server's decode timer likely excludes some generated tokens (e.g. the first one, sampled at the end of prefill). Untested hypothesis; it doesn't affect the per-token slope, but don't read decode_ms/completion_tokens as exact for short outputs."
+    },
+    {
+      "key": "decode.early_eos",
+      "title": "Some runs stopped at end-of-sequence before max_tokens",
+      "evidence": "1 run(s) generated fewer tokens than max_tokens without --ignore-eos.",
+      "consequence": "Their wall_ms measures answer length, not speed. The decode line uses actual completion_tokens, so it is unaffected; per-run tok/s comparisons are not."
+    },
+    {
+      "key": "agent.critic_approves_wrong_answers",
+      "title": "The model critic approves wrong answers",
+      "evidence": "3 false accept(s) over 10 episodes (critic=model window=all cache=false temp=0); success 50% vs baseline 50%.",
+      "consequence": "A same-model critic is not an independent check here; its calls are pure cost unless success rises."
+    },
+    {
+      "key": "agent.irreproducible.critic=none window=all cache=true temp=0",
+      "title": "Agent wall time did not reproduce across runs of critic=none window=all cache=true temp=0",
+      "evidence": "2 runs: 2468 ms/task at 37 prompt tokens/call vs 4894 ms/task at 31 prompt tokens/call.",
+      "consequence": "Something outside the recorded settings changed between runs (server state, background load, thermals). Pooled effects for this config carry that variance; replicate before trusting them."
+    }
+  ],
+  "failure_modes": [
+    {
+      "mode": "wrong answer (planning)",
+      "rule": "failed with no format or tool errors — the plan (expression) was wrong",
+      "episodes": 23,
+      "share": 0.48936170212765956,
+      "configs": [
+        "critic=model window=all cache=false temp=0",
+        "critic=none window=1 cache=false temp=0",
+        "critic=none window=all cache=false temp=0",
+        "critic=none window=all cache=false temp=0.8",
+        "critic=none window=all cache=true temp=0",
+        "critic=oracle window=all cache=false temp=0"
+      ]
+    },
+    {
+      "mode": "format loop",
+      "rule": "failed, ≥1 format error, hit the 6-step limit",
+      "episodes": 15,
+      "share": 0.3191489361702128,
+      "configs": [
+        "critic=model window=all cache=false temp=0",
+        "critic=none window=1 cache=false temp=0",
+        "critic=none window=all cache=false temp=0",
+        "critic=none window=all cache=false temp=0.8",
+        "critic=oracle window=all cache=false temp=0"
+      ]
+    },
+    {
+      "mode": "tool error",
+      "rule": "failed and the calculator rejected ≥1 expression",
+      "episodes": 9,
+      "share": 0.19148936170212766,
+      "configs": [
+        "critic=none window=1 cache=false temp=0",
+        "critic=none window=all cache=false temp=0",
+        "critic=none window=all cache=true temp=0"
+      ]
+    }
+  ],
+  "systematic_failures": [
+    "task0 solved 0/8 episodes across all 6 configs: “A crate holds 12 boxes and each box holds 24 bolts. How many bolts are in 7 crates?”",
+    "task1 solved 0/8 episodes across all 6 configs: “A server handles 340 requests per minute. How many requests does it handle in 3 hours?”",
+    "task3 solved 0/8 episodes across all 6 configs: “A model generates 45 tokens per second. How many tokens does it generate in 8 minutes?”",
+    "task8 solved 0/8 episodes across all 6 configs: “A batch job processes 125 files per run and runs 6 times a day. How many files in 2 weeks?”",
+    "task9 solved 0/8 episodes across all 6 configs: “A 4096-token context is split into chunks of 256 tokens. How many chunks, minus the 3 reserved ones?”"
+  ],
+  "methods": [
+    "Lines (prefill vs evaluated prompt tokens, decode vs output tokens): Theil–Sen — median of pairwise slopes, intercept = median residual. Robust to warm-up outliers; no tuning constant.",
+    "Intervals: 95% percentile bootstrap, 200 resamples, fixed seed 7. Same notebook ⇒ same beliefs.",
+    "Success rates: Wilson score interval. Agent effects: difference of per-episode means vs the baseline config, two-sample bootstrap (unpaired; tasks are the same, so this is conservative).",
+    "Agent configs use only runs over the full 10-task set; subset runs are excluded so success rates are comparable.",
+    "Prefix-cache hit: cache_prompt=true and ≤4 evaluated prompt tokens. Modelled as paying only the fixed prefill cost.",
+    "Status: parameters are KNOWN when the 95% half-width ≤ 15% of the estimate; effects are KNOWN when the interval excludes zero.",
+    "Failure modes are rules over episode metrics, not clustering: solved; wrong answer (no format/tool errors: a planning error, since the calculator is exact); format loop (format errors until the step limit); format error then wrong answer; tool error.",
+    "40 agent episodes predate the tool_errors metric; their tool errors count as 0, so 'tool error' may be under-counted."
+  ]
+}

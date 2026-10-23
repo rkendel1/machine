@@ -37,6 +37,10 @@ jobs:
           cargo run -q -- autopilot --dry-run --budget 10
           cargo run -q -- autopilot --budget 2 --max-steps 4
           cargo run -q -- learnings
+          cargo run -q -- analyze
+          cargo run -q -- scientist --loop --dry-run --budget 5
+          cargo run -q -- scientist --loop --budget 2 --max-steps 4
+          cargo run -q -- report --out "$MACHINE_HOME/report.md"
 
   real-model:
     # A real local model on the CI runner's CPU: llama.cpp + Qwen2.5-0.5B (Q4_K_M and Q8_0).
@@ -110,6 +114,18 @@ jobs:
           ./target/release/machine learnings | tee ci-out/autopilot-learnings.txt
           cp "$MACHINE_HOME/learnings.jsonl" ci-out/ || true
 
+      - name: Scientist on the same notebook
+        env:
+          MACHINE_HOME: ${{ runner.temp }}/real
+          MACHINE_BACKEND: llama-server
+          MACHINE_TEMPLATE: chatml
+        run: |
+          ./target/release/machine analyze | tee ci-out/scientist-analyze.txt
+          ./target/release/machine scientist --loop --budget 10 | tee ci-out/scientist-run.txt
+          ./target/release/machine beliefs | tee ci-out/scientist-beliefs.txt
+          ./target/release/machine report --out ci-out/report.md
+          cp "$MACHINE_HOME/beliefs.json" ci-out/ || true
+
       - name: Job summary
         if: always()
         run: |
@@ -117,8 +133,9 @@ jobs:
             echo '## machine — real local model on the CI runner'
             echo '```'; cat ci-out/00-env.txt 2>/dev/null; echo '```'
             for f in 03-compare-q4-q8 05-compare-critics 06-progress 06-wrap-up autopilot-learnings; do
-              [ -f "ci-out/$f.txt" ] && { echo "### $f"; echo '```'; cat "ci-out/$f.txt"; echo '```'; }
+              if [ -f "ci-out/$f.txt" ]; then echo "### $f"; echo '```'; cat "ci-out/$f.txt"; echo '```'; fi
             done
+            if [ -f ci-out/report.md ]; then echo; cat ci-out/report.md; fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4

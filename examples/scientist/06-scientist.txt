@@ -1,0 +1,26 @@
+$ machine scientist
+═══ SCIENTIST ═══  llama-server@http://127.0.0.1:8080
+beliefs: 10 known, 1 ≈ zero, 17 uncertain, 0 untested  ·  5 anomalies  (details: machine analyze / machine beliefs)
+  ✗ A per-token-only prefill model fails on cache hits
+  ✗ Decode has a negative fixed cost
+  ✗ Some runs stopped at end-of-sequence before max_tokens
+  ✗ The model critic approves wrong answers
+  ✗ Agent wall time did not reproduce across runs of critic=none window=all cache=true temp=0
+
+── RANKED NEXT EXPERIMENTS (score = gain × (0.25 + 0.75·value) / (1 + log2(1 + cost_s/10)))
+  #   candidate                       score  gain value     cost  kind        targets
+  1   replicate:agent:cache_prompt    0.025  0.11  0.77   48.9 s  replicate   effect.agent.cache_prompt.success, effect.agent.cache_prompt.calls, effect.agent.cache_prompt.wall_ms
+  2   replicate:agent:baseline        0.021  0.13  0.40   45.6 s  replicate   agent.baseline.success, agent.baseline.wall_ms, effect.agent.critic=model.success, effect.agent.memory_window=1.success, effect.agent.cache_prompt.wall_ms
+  3   replicate:agent:critic=model    0.019  0.13  0.40  1.1 min  replicate   effect.agent.critic=model.success, effect.agent.critic=model.calls, effect.agent.critic=model.wall_ms
+  4   replicate:agent:critic=oracle   0.019  0.13  0.40  1.1 min  replicate   effect.agent.critic=oracle.success, effect.agent.critic=oracle.calls, effect.agent.critic=oracle.wall_ms
+  5   replicate:agent:memory_window=1  0.014  0.09  0.55  1.1 min  replicate   effect.agent.memory_window=1.success, effect.agent.memory_window=1.calls, effect.agent.memory_window=1.wall_ms
+  6   refine:prefill_fixed            0.004  0.01  0.38    4.7 s  refine      prefill.fixed_ms, prefill.ms_per_token
+  7   refine:decode                   0.002  0.02  0.10   24.4 s  refine      decode.ms_per_token, decode.fixed_ms
+  8   interaction:cache_x_prompt      0.000  0.00  0.77   24.1 s  interaction interaction.cache_x_prompt
+
+  top pick: The effect of cache_prompt on the agent is measured but its interval still includes zero; another 10 episodes narrow it. Its runs disagreed with each other (see anomalies), so this one is a priority.
+  $ machine agent --backend llama-server --template chatml --cache-prompt --lesson 6 --label sci-replicate-agent-cache_prompt --predict success=0.50 --predict calls=3.1 --predict wall_ms=3681
+
+  low value (score < 0.02, won't run): replicate:agent:critic=model, replicate:agent:critic=oracle, replicate:agent:memory_window=1, refine:prefill_fixed, refine:decode, interaction:cache_x_prompt
+
+Run them: machine scientist --loop --budget 45

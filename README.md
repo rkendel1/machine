@@ -59,6 +59,7 @@ machine lesson         # your current lesson card
 
 ```sh
 machine autopilot      # run the cycle unattended (see Autopilot below)
+machine scientist      # rank experiments by expected learning × value ÷ cost (see Scientist mode)
 machine progress       # lessons passed by prediction accuracy
 machine next           # one concrete untried experiment, with the number that motivates it
 machine wrap-up        # end-of-session check, weakest idea, WHAT SHOULD I BUILD NEXT?
@@ -176,6 +177,109 @@ Running that plan for real took 2.2 minutes and found three things
   from 3.1 to 3.9. The prediction of no change was wrong, and a replication
   reproduced the result.
 
+## Scientist mode
+
+The autopilot works through a fixed checklist. Scientist mode keeps an explicit,
+inspectable **model of the system**, fitted from the notebook, and picks the
+experiment that would teach that model the most per second spent. It doesn't
+search over several variables at once: every pick is still one validated
+single-variable `machine …` command with `--predict`, run and scored exactly
+like a human's.
+
+```sh
+machine analyze                              # fit everything, print what's known / uncertain / broken (no runs)
+machine beliefs                              # the explicit belief state (--json = beliefs.json)
+machine beliefs --what-if "prompt_tokens=512 max_tokens=64 cache=true"   # ask the surrogate
+machine scientist                            # ranked next experiments with every score component
+machine scientist --loop --budget 45         # run them: the autopilot loop with the scientist's selector
+machine scientist --loop --dry-run           # show the plan only
+machine report --out report.md               # markdown research note
+```
+
+**What it models** (every choice below is printed by `machine analyze` / `report`):
+
+| belief | model | why this one |
+|---|---|---|
+| prefill | `fixed + per_token × evaluated prompt tokens` | the cache-hit trial showed a fixed per-call cost a per-token model can't see |
+| decode | `fixed + per_token × output tokens` | per-token slope is the decode speed |
+| knob effects | difference of means vs the baseline setting | cache hit, temperature, quantization (your tagged runs), each agent knob |
+| interaction | slope of cache-hit prefill vs cached prompt length | "does caching still pay for long prompts?" |
+| agent configs | Wilson interval on success, bootstrap on calls and wall | full 10-task runs only |
+| failure modes | explicit rules over episode metrics | planning error vs format loop vs tool error |
+
+- Lines are **Theil–Sen** fits (median of pairwise slopes), which are robust to warm-up outliers.
+- Intervals come from a **95% percentile bootstrap** with a fixed seed, so the same notebook always gives the same beliefs.
+- Each belief is **KNOWN** (parameter interval within ±15%, or effect interval excluding 0), **≈ ZERO** (effect interval inside its practical-zero band), **UNCERTAIN**, or **UNTESTED**.
+
+**How it picks**: `score = gain × (0.25 + 0.75·value) / (1 + log2(1 + cost_s/10))`.
+
+- **gain** is how much the trial would shrink the target belief's interval. It's 1 for an untested belief; otherwise it is `u·(1 − √(n/(n+m)))`.
+- **value** is how much that belief governs agent time or success, read off the surrogate. For example, prefill is 77% of an agent call here.
+- **cost** is the surrogate's estimate of how long the trial takes.
+
+Candidates are:
+
+- the checklist's untried levers;
+- refinements of fitted lines;
+- the cache × prompt-length interaction test (`sweep --pad-to 512`);
+- replications of uncertain agent effects, with priority for configs whose runs disagreed.
+
+Below a score of 0.02 a trial is "low value" and the loop stops. With fewer than 15 run rows it falls back to the checklist.
+
+**On the real notebook** ([`examples/scientist/`](examples/scientist/)), `machine analyze` recovers the lessons found by hand and by the autopilot:
+
+```
+── COST MODEL (95% intervals)
+  prefill  ≈ 30.7 ms [27.5 ms, 37.9 ms] + 6.15 ms [5.92 ms, 6.29 ms] × evaluated prompt tokens
+  decode   ≈ -32.1 ms [-45.5 ms, -13.6 ms] + 36.1 ms [35.7 ms, 36.7 ms] × output tokens
+  ⇒ prefill is 77% of a baseline agent call: prompt-side levers dominate agent cost
+
+── KNOWN TO BE ≈ ZERO
+  interaction.cache_x_prompt             +0.01 ms [-0.00 ms, +0.03 ms]   a cache hit is equally cheap for long prompts
+
+── STILL UNCERTAIN
+  effect.agent.critic=model.success      +0 pts [-40 pts, +40 pts]
+  effect.agent.memory_window=1.success   -20 pts [-55 pts, +15 pts]
+  effect.agent.cache_prompt.wall_ms      -867 ms [-3340 ms, +3019 ms]
+
+── BROKEN ASSUMPTIONS / ANOMALIES
+  ✗ A per-token-only prefill model fails on cache hits     (34.7 ms measured vs 7.2 ms predicted)
+  ✗ Decode has a negative fixed cost                       (≈ −0.9 tokens; timer likely excludes a token — untested)
+  ✗ The model critic approves wrong answers                (3 false accepts, success unchanged at 50%)
+  ✗ Agent wall time did not reproduce across runs of …cache=true…   (2468 vs 4894 ms/task)
+
+── AGENT FAILURE MODES
+  wrong answer (planning) 49% · format loop 32% · tool error 19%
+  systematic: tasks 0, 1, 3, 8, 9 fail in every configuration — no knob fixes these
+```
+
+**Better ordering on moderate data.** On the notebook from before any autopilot run
+([`01-dry-run-vs-checklist.txt`](examples/scientist/01-dry-run-vs-checklist.txt)):
+
+- The checklist runs `cache sweep → memory window → agent cache`.
+- The scientist runs `cache sweep (0.51) → agent cache (0.24) → memory window (0.18)`, because agent caching targets the 77% of each call that is prefill.
+
+During the real loop ([`02-loop-run.txt`](examples/scientist/02-loop-run.txt), 6 trials, 3.4 min), it re-planned after the first trial and ran a test the checklist doesn't have:
+
+1. **Cache sweep.** The fixed + per-token model's cache-hit prediction missed by 31% (measured 33 ms). The autopilot's per-token-only model had missed the same experiment by 80%.
+2. **Cache × prompt-length interaction** at 432 tokens. A hit cost 37.5 ms against 3142 ms cold. Both predictions held, and the interaction is now **≈ zero**.
+3. **Agent caching.** Wall time per task fell 46%.
+4. **Memory window.** Wall time per task rose 52%.
+5. **Agent caching, replicated.** It did *not* reproduce (+8%), even though cache hits were confirmed (31 evaluated tokens per call). The effect went from KNOWN back to UNCERTAIN, and the anomaly above now asks for another replication.
+6. **Baseline, replicated.** It reproduced within 1%, so the slowdown in trial 5 isn't the baseline drifting.
+
+`machine beliefs` prints every belief with its interval, n, status and method
+([`04-beliefs.txt`](examples/scientist/04-beliefs.txt)). `--what-if` prices any
+configuration with an interval and warns when extrapolating. `machine report`
+writes [a research note](examples/scientist/report.md) you can check in.
+
+**Limitations, stated:**
+
+- The surrogate is two straight lines plus a constant. It knows nothing about context limits, batching or GPU offload, and it extrapolates poorly.
+- Agent intervals rest on 10 tasks and one small model.
+- Agent effects are compared unpaired, which is conservative.
+- The weights in the score are judgment calls, printed every time so you can argue with them.
+
 ## What it measures
 
 | metric | source |
@@ -203,9 +307,11 @@ src/predict.rs        prediction capture and scoring
 src/advisor.rs        progress gating, `next`, `wrap-up`, untried levers
 src/autopilot.rs      deterministic proposer, cost model, unattended loop
 src/learnings.rs      learnings.jsonl records and `machine learnings`
+src/scientist/        fit (Theil–Sen, bootstrap, Wilson) · analyze · beliefs · surrogate · selector · report
 src/lessons.rs        the six lesson cards
 .machine/notebook.jsonl   append-only raw data (override with MACHINE_HOME)
 .machine/learnings.jsonl  one interpreted record per autopilot trial
+.machine/beliefs.json     latest belief state (+ beliefs_history.jsonl, one line per scientist trial)
 ```
 
 ## CI
@@ -214,6 +320,7 @@ src/lessons.rs        the six lesson cards
 **real-model job**: it builds a pinned `llama-server` (static, portable CPU flags),
 downloads Qwen2.5-0.5B-Instruct Q4_K_M and Q8_0 from Hugging Face, caches both
 with `actions/cache`, runs [`examples/real-session.sh`](examples/real-session.sh),
-then runs `machine autopilot --budget 10` on the resulting notebook, writes the key
-tables and the autopilot's learnings to the job summary, and uploads transcripts,
+then runs `machine autopilot --budget 10` and `machine scientist --loop --budget 10` on the
+resulting notebook, writes the key
+tables, the autopilot's learnings and the scientist's research report to the job summary, and uploads transcripts,
 notebook and learnings as an artifact. Prediction misses on different hardware don't fail the build — they're data.

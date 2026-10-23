@@ -462,6 +462,18 @@ pub fn rank(a: &Analysis, records: &[Record], state: &AutopilotState) -> Vec<Can
                     value = v;
                 }
             }
+            // A config whose runs disagree is worth re-measuring regardless of
+            // how tight the pooled interval looks: pooling hid the disagreement.
+            let mut why = why;
+            if let ExperimentSpec::Agent { settings, .. } = &proposal.spec
+                && replicate
+            {
+                let flag = format!("agent.irreproducible.{}", analyze::config_key(settings));
+                if a.beliefs.anomalies.iter().any(|x| x.key == flag) {
+                    value = value.max(a.surrogate.agent_prefill_share().unwrap_or(0.5));
+                    why = format!("{why} Its runs disagreed with each other (see anomalies), so this one is a priority.");
+                }
+            }
             let cost_ms = proposal.est_ms.max(1.0);
             let score = gain * (0.25 + 0.75 * value) / (1.0 + (1.0 + cost_ms / 10_000.0).log2());
             let source = if proposal.key.starts_with("replicate:") {

@@ -16,6 +16,9 @@ pub enum Status {
     Known,
     /// Measured, but the interval is wide or includes zero.
     Uncertain,
+    /// An effect whose whole interval lies inside its practical-zero band:
+    /// "we know it doesn't matter".
+    Negligible,
     /// No data that could estimate it.
     Untested,
 }
@@ -25,6 +28,7 @@ impl Status {
         match self {
             Status::Known => "KNOWN    ",
             Status::Uncertain => "UNCERTAIN",
+            Status::Negligible => "≈ ZERO   ",
             Status::Untested => "UNTESTED ",
         }
     }
@@ -46,6 +50,9 @@ pub struct Belief {
     pub method: String,
     /// True for effects (status from "excludes zero"), false for parameters.
     pub effect: bool,
+    /// Effects only: magnitude below which the effect is practically zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub negligible: Option<f64>,
 }
 
 /// Parameters count as known once the 95% half-width is within this
@@ -63,14 +70,24 @@ impl Belief {
             status: Status::Untested,
             method: method.into(),
             effect,
+            negligible: None,
         }
     }
 
+    /// Declare the practical-zero band (call before `with`).
+    pub fn negligible_below(mut self, band: Option<f64>) -> Self {
+        self.negligible = band.filter(|b| *b > 0.0);
+        self
+    }
+
     pub fn with(mut self, est: Option<Est>, n: usize) -> Self {
-        self.n = n;
+        self.n = if est.is_some() { n } else { 0 };
         self.status = match est {
             None => Status::Untested,
             Some(e) if self.effect && e.excludes_zero() => Status::Known,
+            Some(e) if self.effect && self.negligible.is_some_and(|b| e.lo >= -b && e.hi <= b) => {
+                Status::Negligible
+            }
             Some(e) if !self.effect && e.rel_width() <= KNOWN_REL_WIDTH => Status::Known,
             Some(_) => Status::Uncertain,
         };
@@ -82,6 +99,9 @@ impl Belief {
     /// Effects are scaled by |estimate| + half-width so a tight null result
     /// ("no effect") counts as known, not as infinitely uncertain.
     pub fn uncertainty(&self) -> f64 {
+        if self.status == Status::Negligible {
+            return 0.0;
+        }
         match self.est {
             None => 1.0,
             Some(e) if !e.lo.is_finite() || !e.hi.is_finite() => 1.0,
@@ -218,7 +238,7 @@ impl BeliefState {
             if self.simulated { "  [SIMULATED]" } else { "" }
         );
         println!(
-            "status: KNOWN = interval within ±{:.0}% (parameters) or excluding zero (effects)\n",
+            "status: KNOWN = interval within ±{:.0}% (parameters) or excluding zero (effects); ≈ ZERO = effect interval inside its practical-zero band\n",
             KNOWN_REL_WIDTH * 100.0
         );
         for b in &self.beliefs {

@@ -55,9 +55,16 @@ pub fn markdown(a: &Analysis, ranked: &[Candidate], learned: &[Learning], flags:
     {
         bullets.push(format!("{}: **{}**.", capitalise(&x.what), x.fmt_est()));
     }
+    for x in b.beliefs.iter().filter(|x| x.status == Status::Negligible) {
+        bullets.push(format!(
+            "No practical effect: {} ({}).",
+            x.what,
+            x.fmt_est()
+        ));
+    }
     for an in &b.anomalies {
         if !an.key.starts_with("prediction_miss") {
-            bullets.push(format!("Broken assumption — {}.", an.title.to_lowercase()));
+            bullets.push(format!("Anomaly — {}.", an.title.to_lowercase()));
         }
     }
     if bullets.is_empty() {
@@ -95,6 +102,7 @@ pub fn markdown(a: &Analysis, ranked: &[Candidate], learned: &[Learning], flags:
 
     for (title, st) in [
         ("What we now know", Status::Known),
+        ("Known to be practically zero", Status::Negligible),
         ("What is still uncertain", Status::Uncertain),
         ("Untested", Status::Untested),
     ] {

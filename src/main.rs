@@ -388,8 +388,9 @@ fn scientist_once(
     let count = |s: Status| a.beliefs.beliefs.iter().filter(|b| b.status == s).count();
     println!("═══ SCIENTIST ═══  {name}");
     println!(
-        "beliefs: {} known, {} uncertain, {} untested  ·  {} anomalies  (details: machine analyze / machine beliefs)",
+        "beliefs: {} known, {} ≈ zero, {} uncertain, {} untested  ·  {} anomalies  (details: machine analyze / machine beliefs)",
         count(Status::Known),
+        count(Status::Negligible),
         count(Status::Uncertain),
         count(Status::Untested),
         a.beliefs.anomalies.len()

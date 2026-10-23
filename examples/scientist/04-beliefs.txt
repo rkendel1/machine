@@ -1,0 +1,70 @@
+$ machine beliefs
+═══ BELIEFS ═══  llama-server@http://127.0.0.1:8080
+fitted 2026-10-23T00:37:23Z from 66 run rows and 85 agent episodes
+status: KNOWN = interval within ±15% (parameters) or excluding zero (effects); ≈ ZERO = effect interval inside its practical-zero band
+
+  UNCERTAIN  prefill.fixed_ms                   30.7 ms [27.5 ms, 37.9 ms]               n=66  
+             fixed prefill cost per call, paid even when ~0 tokens are evaluated  (Theil–Sen over 66 rows at 6 distinct lengths [1–852], R² 0.977)
+  KNOWN      prefill.ms_per_token               6.15 ms [5.92 ms, 6.29 ms]               n=66  
+             prefill cost per evaluated prompt token  (Theil–Sen over 66 rows at 6 distinct lengths [1–852], R² 0.977)
+  KNOWN      decode.ms_per_token                36.1 ms [35.7 ms, 36.7 ms]               n=66  
+             decode cost per generated token  (Theil–Sen over 66 rows at 6 distinct lengths [8–128], R² 0.991)
+  KNOWN      decode.fixed_ms                    -32.1 ms [-45.5 ms, -13.6 ms]            n=66  
+             fixed decode cost per call  (Theil–Sen over 66 rows at 6 distinct lengths [8–128], R² 0.991)
+  KNOWN      overhead.ms                        1.94 ms [1.68 ms, 2.37 ms]               n=66  
+             wall − prefill − decode per call (HTTP, JSON, scheduling)  (bootstrap mean over all measured calls)
+  UNCERTAIN  noise.decode_cv                    2.3% [2.2%, 2.4%]                        n=2   
+             run-to-run spread of decode tok/s (median cv over repeat groups; interval = min–max)  (2 repeat groups with ≥5 runs)
+  KNOWN      effect.cache_hit.prefill_ms        -179 ms [-195 ms, -164 ms]               n=10  
+             prefill change when the default prompt is already cached (cache_prompt false → true)  (bootstrap difference of means, cache sweeps at the default prompt)
+  ≈ ZERO     interaction.cache_x_prompt         +0.01 ms [-0.00 ms, +0.03 ms]            n=8   
+             extra cache-hit prefill per token of cached prompt (0 = a hit is equally cheap for long prompts)  (slope of hit prefill vs cached prompt length across cache sweeps at ≥2 lengths (≥2× apart); ≈0 if under 10% of the per-token prefill cost)
+  UNCERTAIN  effect.temperature.decode_tok_s    +0.52 tok/s [-0.36 tok/s, +1.46 tok/s]   n=10  
+             decode speed change from greedy to sampling (temperature 0 → 0.8)  (bootstrap difference of means, temperature sweeps; ≈0 if within 2× the decode noise floor)
+  KNOWN      effect.quant.decode_tok_s          -3.18 tok/s [-3.66 tok/s, -2.65 tok/s]   n=16  
+             decode speed change across quantizations (q4_k_m → q8_0); load-time knob, measured by you  (bootstrap difference of means over runs tagged quant=…)
+  KNOWN      effect.quant.peak_rss_mib          +145 MiB [+145 MiB, +145 MiB]            n=16  
+             server memory change across quantizations (q4_k_m → q8_0); load-time knob, measured by you  (bootstrap difference of means over runs tagged quant=…)
+  UNCERTAIN  agent.baseline.success             50% [30%, 70%]                           n=20  
+             success rate of the baseline agent (greedy, no critic, full history, no cache)  (Wilson 95% interval over 10-task runs)
+  UNCERTAIN  agent.baseline.wall_ms             4548 ms [3630 ms, 5721 ms]               n=20  
+             wall time per task of the baseline agent  (bootstrap mean over 10-task runs)
+  UNCERTAIN  effect.agent.critic=model.success  +0 pts [-40 pts, +40 pts]                n=30  
+             success change from baseline when only critic=model changes  (bootstrap difference of per-episode means vs the baseline config)
+  UNCERTAIN  effect.agent.critic=model.calls    +0.80 calls [-0.10 calls, +1.70 calls]   n=30  
+             calls per task change from baseline when only critic=model changes  (bootstrap difference of per-episode means vs the baseline config)
+  UNCERTAIN  effect.agent.critic=model.wall_ms  +431 ms [-1279 ms, +2249 ms]             n=30  
+             wall per task change from baseline when only critic=model changes  (bootstrap difference of per-episode means vs the baseline config)
+  UNCERTAIN  effect.agent.critic=oracle.success +0 pts [-40 pts, +40 pts]                n=30  
+             success change from baseline when only critic=oracle changes  (bootstrap difference of per-episode means vs the baseline config)
+  UNCERTAIN  effect.agent.critic=oracle.calls   +1.10 calls [-0.30 calls, +2.45 calls]   n=30  
+             calls per task change from baseline when only critic=oracle changes  (bootstrap difference of per-episode means vs the baseline config)
+  UNCERTAIN  effect.agent.critic=oracle.wall_ms +1938 ms [-720 ms, +4294 ms]             n=30  
+             wall per task change from baseline when only critic=oracle changes  (bootstrap difference of per-episode means vs the baseline config)
+  UNCERTAIN  effect.agent.memory_window=1.success -20 pts [-55 pts, +15 pts]               n=30  
+             success change from baseline when only memory_window=1 changes  (bootstrap difference of per-episode means vs the baseline config)
+  UNCERTAIN  effect.agent.memory_window=1.calls +0.80 calls [-0.60 calls, +2.20 calls]   n=30  
+             calls per task change from baseline when only memory_window=1 changes  (bootstrap difference of per-episode means vs the baseline config)
+  UNCERTAIN  effect.agent.memory_window=1.wall_ms +2343 ms [-673 ms, +5513 ms]             n=30  
+             wall per task change from baseline when only memory_window=1 changes  (bootstrap difference of per-episode means vs the baseline config)
+  UNCERTAIN  effect.agent.cache_prompt.success  +0 pts [-30 pts, +30 pts]                n=40  
+             success change from baseline when only cache_prompt changes  (bootstrap difference of per-episode means vs the baseline config)
+  UNCERTAIN  effect.agent.cache_prompt.calls    +0.00 calls [-0.75 calls, +0.90 calls]   n=40  
+             calls per task change from baseline when only cache_prompt changes  (bootstrap difference of per-episode means vs the baseline config)
+  UNCERTAIN  effect.agent.cache_prompt.wall_ms  -867 ms [-3340 ms, +3019 ms]             n=40  
+             wall per task change from baseline when only cache_prompt changes  (bootstrap difference of per-episode means vs the baseline config)
+  KNOWN      effect.agent.temperature=0.8.success -50 pts [-70 pts, -30 pts]               n=30  
+             success change from baseline when only temperature=0.8 changes  (bootstrap difference of per-episode means vs the baseline config)
+  KNOWN      effect.agent.temperature=0.8.calls +1.40 calls [+0.20 calls, +2.60 calls]   n=30  
+             calls per task change from baseline when only temperature=0.8 changes  (bootstrap difference of per-episode means vs the baseline config)
+  KNOWN      effect.agent.temperature=0.8.wall_ms +2361 ms [+253 ms, +4392 ms]             n=30  
+             wall per task change from baseline when only temperature=0.8 changes  (bootstrap difference of per-episode means vs the baseline config)
+
+  agent configurations (10-task runs only):
+    config                                        eps      success [95%]      calls [95%]        wall/task [95%]
+    critic=model window=all cache=false temp=0     10       50% [24, 76]   3.9 [3.3, 4.5]   4979 [3812, 6329] ms
+    critic=none window=1 cache=false temp=0        10       30% [11, 60]   3.9 [2.7, 5.1]   6891 [3849, 9808] ms
+    critic=none window=all cache=false temp=0      20       50% [30, 70]   3.1 [2.6, 3.8]   4548 [3630, 5721] ms
+    critic=none window=all cache=false temp=0.8    10         0% [0, 28]   4.5 [3.4, 5.6]   6909 [5004, 8777] ms
+    critic=none window=all cache=true temp=0       20       50% [30, 70]   3.1 [2.6, 3.8]   3681 [1802, 7169] ms
+    critic=oracle window=all cache=false temp=0    10       50% [24, 76]   4.2 [3.0, 5.2]   6486 [4449, 8303] ms

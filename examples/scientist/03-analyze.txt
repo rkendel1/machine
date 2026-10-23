@@ -1,0 +1,89 @@
+$ machine analyze
+═══ ANALYSIS ═══  llama-server@http://127.0.0.1:8080
+66 run rows, 85 agent episodes, 6 agent configurations
+
+── COST MODEL (95% intervals)
+  prefill  ≈ 30.7 ms [27.5 ms, 37.9 ms] + 6.15 ms [5.92 ms, 6.29 ms] × evaluated prompt tokens
+  decode   ≈ -32.1 ms [-45.5 ms, -13.6 ms] + 36.1 ms [35.7 ms, 36.7 ms] × output tokens
+  overhead ≈ 1.94 ms [1.68 ms, 2.37 ms] per call
+  ⇒ steady-state decode ≈ 27.7 tok/s; noise floor (decode cv) 2.3% [2.2%, 2.4%]
+  ⇒ prefill is 77% of a baseline agent call: prompt-side levers dominate agent cost
+
+── WHAT WE NOW KNOW (10)
+  prefill.ms_per_token                   6.15 ms [5.92 ms, 6.29 ms]         prefill cost per evaluated prompt token
+  decode.ms_per_token                    36.1 ms [35.7 ms, 36.7 ms]         decode cost per generated token
+  decode.fixed_ms                        -32.1 ms [-45.5 ms, -13.6 ms]      fixed decode cost per call
+  overhead.ms                            1.94 ms [1.68 ms, 2.37 ms]         wall − prefill − decode per call (HTTP, JSON, scheduling)
+  effect.cache_hit.prefill_ms            -179 ms [-195 ms, -164 ms]         prefill change when the default prompt is already cached (cache_prompt false → true)
+  effect.quant.decode_tok_s              -3.18 tok/s [-3.66 tok/s, -2.65 tok/s] decode speed change across quantizations (q4_k_m → q8_0); load-time knob, measured by you
+  effect.quant.peak_rss_mib              +145 MiB [+145 MiB, +145 MiB]      server memory change across quantizations (q4_k_m → q8_0); load-time knob, measured by you
+  effect.agent.temperature=0.8.success   -50 pts [-70 pts, -30 pts]         success change from baseline when only temperature=0.8 changes
+  effect.agent.temperature=0.8.calls     +1.40 calls [+0.20 calls, +2.60 calls] calls per task change from baseline when only temperature=0.8 changes
+  effect.agent.temperature=0.8.wall_ms   +2361 ms [+253 ms, +4392 ms]       wall per task change from baseline when only temperature=0.8 changes
+
+── KNOWN TO BE ≈ ZERO (interval inside its practical-zero band) (1)
+  interaction.cache_x_prompt             +0.01 ms [-0.00 ms, +0.03 ms]      extra cache-hit prefill per token of cached prompt (0 = a hit is equally cheap for long prompts)
+
+── STILL UNCERTAIN (measured, interval wide or includes 0) (17)
+  prefill.fixed_ms                       30.7 ms [27.5 ms, 37.9 ms]         fixed prefill cost per call, paid even when ~0 tokens are evaluated
+  noise.decode_cv                        2.3% [2.2%, 2.4%]                  run-to-run spread of decode tok/s (median cv over repeat groups; interval = min–max)
+  effect.temperature.decode_tok_s        +0.52 tok/s [-0.36 tok/s, +1.46 tok/s] decode speed change from greedy to sampling (temperature 0 → 0.8)
+  agent.baseline.success                 50% [30%, 70%]                     success rate of the baseline agent (greedy, no critic, full history, no cache)
+  agent.baseline.wall_ms                 4548 ms [3630 ms, 5721 ms]         wall time per task of the baseline agent
+  effect.agent.critic=model.success      +0 pts [-40 pts, +40 pts]          success change from baseline when only critic=model changes
+  effect.agent.critic=model.calls        +0.80 calls [-0.10 calls, +1.70 calls] calls per task change from baseline when only critic=model changes
+  effect.agent.critic=model.wall_ms      +431 ms [-1279 ms, +2249 ms]       wall per task change from baseline when only critic=model changes
+  effect.agent.critic=oracle.success     +0 pts [-40 pts, +40 pts]          success change from baseline when only critic=oracle changes
+  effect.agent.critic=oracle.calls       +1.10 calls [-0.30 calls, +2.45 calls] calls per task change from baseline when only critic=oracle changes
+  effect.agent.critic=oracle.wall_ms     +1938 ms [-720 ms, +4294 ms]       wall per task change from baseline when only critic=oracle changes
+  effect.agent.memory_window=1.success   -20 pts [-55 pts, +15 pts]         success change from baseline when only memory_window=1 changes
+  effect.agent.memory_window=1.calls     +0.80 calls [-0.60 calls, +2.20 calls] calls per task change from baseline when only memory_window=1 changes
+  effect.agent.memory_window=1.wall_ms   +2343 ms [-673 ms, +5513 ms]       wall per task change from baseline when only memory_window=1 changes
+  effect.agent.cache_prompt.success      +0 pts [-30 pts, +30 pts]          success change from baseline when only cache_prompt changes
+  effect.agent.cache_prompt.calls        +0.00 calls [-0.75 calls, +0.90 calls] calls per task change from baseline when only cache_prompt changes
+  effect.agent.cache_prompt.wall_ms      -867 ms [-3340 ms, +3019 ms]       wall per task change from baseline when only cache_prompt changes
+
+── UNTESTED (0)
+
+── BROKEN ASSUMPTIONS / ANOMALIES (5)
+  ✗ A per-token-only prefill model fails on cache hits
+    evidence: 8 cache-hit calls evaluated 1 token(s) yet prefill took 34.7 ms on average; 7.23 ms/token predicts 7.2 ms (5× too low).
+    so: Model prefill as fixed + per-token: 30.7 ms + 6.15 ms/token. The fixed part bounds what caching can save per call.
+  ✗ Decode has a negative fixed cost
+    evidence: decode_ms ≈ -32.1 ms + 36.14 ms × output tokens; the intercept is about 0.9 tokens' worth below zero.
+    so: Physically a call can't save time, so the server's decode timer likely excludes some generated tokens (e.g. the first one, sampled at the end of prefill). Untested hypothesis; it doesn't affect the per-token slope, but don't read decode_ms/completion_tokens as exact for short outputs.
+  ✗ Some runs stopped at end-of-sequence before max_tokens
+    evidence: 1 run(s) generated fewer tokens than max_tokens without --ignore-eos.
+    so: Their wall_ms measures answer length, not speed. The decode line uses actual completion_tokens, so it is unaffected; per-run tok/s comparisons are not.
+  ✗ The model critic approves wrong answers
+    evidence: 3 false accept(s) over 10 episodes (critic=model window=all cache=false temp=0); success 50% vs baseline 50%.
+    so: A same-model critic is not an independent check here; its calls are pure cost unless success rises.
+  ✗ Agent wall time did not reproduce across runs of critic=none window=all cache=true temp=0
+    evidence: 2 runs: 2468 ms/task at 37 prompt tokens/call vs 4894 ms/task at 31 prompt tokens/call.
+    so: Something outside the recorded settings changed between runs (server state, background load, thermals). Pooled effects for this config carry that variance; replicate before trusting them.
+
+── AGENT FAILURE MODES (rules, not clustering)
+  wrong answer (planning)           23 episodes ( 49% of failures)  — failed with no format or tool errors — the plan (expression) was wrong
+  format loop                       15 episodes ( 32% of failures)  — failed, ≥1 format error, hit the 6-step limit
+  tool error                         9 episodes ( 19% of failures)  — failed and the calculator rejected ≥1 expression
+  systematic: task0 solved 0/8 episodes across all 6 configs: “A crate holds 12 boxes and each box holds 24 bolts. How many bolts are in 7 crates?”
+  systematic: task1 solved 0/8 episodes across all 6 configs: “A server handles 340 requests per minute. How many requests does it handle in 3 hours?”
+  systematic: task3 solved 0/8 episodes across all 6 configs: “A model generates 45 tokens per second. How many tokens does it generate in 8 minutes?”
+  systematic: task8 solved 0/8 episodes across all 6 configs: “A batch job processes 125 files per run and runs 6 times a day. How many files in 2 weeks?”
+  systematic: task9 solved 0/8 episodes across all 6 configs: “A 4096-token context is split into chunks of 256 tokens. How many chunks, minus the 3 reserved ones?”
+
+beliefs saved to .machine/beliefs.json
+
+── REMAINING HIGH-VALUE EXPERIMENTS
+  #   candidate                       score  gain value     cost  kind        targets
+  1   replicate:agent:cache_prompt    0.025  0.11  0.77   48.9 s  replicate   effect.agent.cache_prompt.success, effect.agent.cache_prompt.calls, effect.agent.cache_prompt.wall_ms
+  2   replicate:agent:baseline        0.021  0.13  0.40   45.6 s  replicate   agent.baseline.success, agent.baseline.wall_ms, effect.agent.critic=model.success, effect.agent.memory_window=1.success, effect.agent.cache_prompt.wall_ms
+  3   replicate:agent:critic=model    0.019  0.13  0.40  1.1 min  replicate   effect.agent.critic=model.success, effect.agent.critic=model.calls, effect.agent.critic=model.wall_ms
+  4   replicate:agent:critic=oracle   0.019  0.13  0.40  1.1 min  replicate   effect.agent.critic=oracle.success, effect.agent.critic=oracle.calls, effect.agent.critic=oracle.wall_ms
+  5   replicate:agent:memory_window=1  0.014  0.09  0.55  1.1 min  replicate   effect.agent.memory_window=1.success, effect.agent.memory_window=1.calls, effect.agent.memory_window=1.wall_ms
+  6   refine:prefill_fixed            0.004  0.01  0.38    4.7 s  refine      prefill.fixed_ms, prefill.ms_per_token
+
+  top pick: The effect of cache_prompt on the agent is measured but its interval still includes zero; another 10 episodes narrow it. Its runs disagreed with each other (see anomalies), so this one is a priority.
+  $ machine agent --backend llama-server --template chatml --cache-prompt --lesson 6 --label sci-replicate-agent-cache_prompt --predict success=0.50 --predict calls=3.1 --predict wall_ms=3681
+
+  low value (score < 0.02, won't run): replicate:agent:critic=model, replicate:agent:critic=oracle, replicate:agent:memory_window=1, refine:prefill_fixed, refine:decode, interaction:cache_x_prompt

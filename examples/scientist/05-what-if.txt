@@ -1,0 +1,22 @@
+$ machine beliefs --what-if "prompt_tokens=512 max_tokens=64 cache=false"
+what-if: prompt 512 tokens, 64 output tokens
+  prefill  3178 ms [3066, 3248]
+  decode   2281 ms [2263, 2318]
+  overhead 1.9 ms
+  wall     5460 ms [5349, 5552]   (95% interval from bootstrap draws of both lines)
+
+$ machine beliefs --what-if "prompt_tokens=512 max_tokens=64 cache=true"
+what-if: prompt 512 tokens (cache hit → 1 token evaluated), 64 output tokens
+  prefill  37 ms [34, 44]
+  decode   2281 ms [2263, 2318]
+  overhead 1.9 ms
+  wall     2320 ms [2303, 2356]   (95% interval from bootstrap draws of both lines)
+
+$ machine beliefs --what-if "prompt_tokens=4000 max_tokens=64"
+what-if: prompt 4000 tokens, 64 output tokens
+  prefill  24616 ms [23710, 25183]
+  decode   2281 ms [2263, 2318]
+  overhead 1.9 ms
+  wall     26899 ms [26003, 27499]   (95% interval from bootstrap draws of both lines)
+  ⚠ prompt length 4000 is outside the measured range [1, 852]: this is an extrapolation.
+

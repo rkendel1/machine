@@ -165,3 +165,13 @@ prefix caching and the memory window had been tried, and ran 5 trials in 2.2 min
 [learnings](autopilot/learnings.txt), [raw](autopilot/learnings.jsonl)). The
 headline: prefix caching cut the agent's wall time per task by 59% (4.5 s → 1.9 s)
 at the same accuracy.
+
+## Scientist mode on the same data ([`scientist/`](scientist/))
+
+`machine scientist --loop --budget 20`, started from the notebook above (before
+the autopilot), ran 6 trials in 3.4 min and kept an explicit belief state the
+whole way ([run](scientist/02-loop-run.txt), [beliefs](scientist/04-beliefs.txt),
+[report](scientist/report.md)). It established that a cache hit costs the same
+~35 ms fixed prefill whether the cached prompt is 28 or 432 tokens, and it
+caught that the agent-caching speed-up did not reproduce on a second run, so
+it moved that effect back to UNCERTAIN instead of reporting it as known.

@@ -216,6 +216,12 @@ pub fn analyze(records: &[Record], learned: &[Learning], backend: &str) -> Analy
         )
         .with(noise, cvs.len()),
     );
+    if cvs.len() < 3
+        && let Some(b) = beliefs.last_mut()
+        && b.status == Status::Known
+    {
+        b.status = Status::Uncertain; // a spread from <3 groups is an anecdote
+    }
 
     // ── Effects of per-request knobs ──────────────────────────────────────
     let sweep_rows = |var: &str| -> Vec<&Record> {
@@ -291,8 +297,9 @@ pub fn analyze(records: &[Record], learned: &[Learning], backend: &str) -> Analy
             "extra cache-hit prefill per token of cached prompt (0 = a hit is equally cheap for long prompts)",
             "Δms",
             true,
-            "slope of hit prefill vs cached prompt length across cache sweeps at ≥2 lengths (≥2× apart)",
+            "slope of hit prefill vs cached prompt length across cache sweeps at ≥2 lengths (≥2× apart); ≈0 if under 10% of the per-token prefill cost",
         )
+        .negligible_below(prefill.as_ref().map(|l| 0.1 * l.slope.value))
         .with(interaction, per_len.iter().map(|p| p.1.len()).sum()),
     );
 
@@ -307,7 +314,12 @@ pub fn analyze(records: &[Record], learned: &[Learning], backend: &str) -> Analy
             "decode speed change from greedy to sampling (temperature 0 → 0.8)",
             "Δtok/s",
             true,
-            "bootstrap difference of means, temperature sweeps",
+            "bootstrap difference of means, temperature sweeps; ≈0 if within 2× the decode noise floor",
+        )
+        .negligible_below(
+            noise
+                .zip(fit::mean_ci(&t0))
+                .map(|(cv, m)| 2.0 * cv.value * m.value),
         )
         .with(fit::diff_ci(&t0, &t8), t0.len() + t8.len()),
     );
@@ -618,6 +630,40 @@ pub fn analyze(records: &[Record], learned: &[Learning], backend: &str) -> Analy
             consequence: "A same-model critic is not an independent check here; its calls are pure cost unless success rises.".into(),
         });
     }
+    // Same configuration, different runs, different answers: something the
+    // notebook doesn't record changed between them.
+    for (key, (_, eps, runs)) in &groups {
+        if *runs < 2 {
+            continue;
+        }
+        let mut per: BTreeMap<&str, (f64, f64, usize)> = BTreeMap::new();
+        for r in eps {
+            let e = per.entry(&r.group).or_default();
+            e.0 += r.metrics.get("wall_ms").copied().unwrap_or(0.0);
+            e.1 += r.metrics.get("prompt_tokens").copied().unwrap_or(0.0)
+                / r.metrics.get("calls").copied().unwrap_or(1.0).max(1.0);
+            e.2 += 1;
+        }
+        let means: Vec<(f64, f64)> = per
+            .values()
+            .map(|(w, p, n)| (w / *n as f64, p / *n as f64))
+            .collect();
+        let (lo, hi) = means.iter().fold((f64::INFINITY, 0.0_f64), |(a, b), m| {
+            (a.min(m.0), b.max(m.0))
+        });
+        if lo > 0.0 && hi / lo > 1.3 {
+            let runs_txt: Vec<String> = means
+                .iter()
+                .map(|(w, p)| format!("{w:.0} ms/task at {p:.0} prompt tokens/call"))
+                .collect();
+            anomalies.push(Anomaly {
+                key: format!("agent.irreproducible.{key}"),
+                title: format!("Agent wall time did not reproduce across runs of {key}"),
+                evidence: format!("{} runs: {}.", means.len(), runs_txt.join(" vs ")),
+                consequence: "Something outside the recorded settings changed between runs (server state, background load, thermals). Pooled effects for this config carry that variance; replicate before trusting them.".into(),
+            });
+        }
+    }
     let misses: Vec<&Learning> = learned
         .iter()
         .filter(|l| l.error_pct.values().any(|e| *e > 50.0))
@@ -808,6 +854,10 @@ pub fn print(a: &Analysis) {
         }
     };
     show("WHAT WE NOW KNOW", Status::Known);
+    show(
+        "KNOWN TO BE ≈ ZERO (interval inside its practical-zero band)",
+        Status::Negligible,
+    );
     show(
         "STILL UNCERTAIN (measured, interval wide or includes 0)",
         Status::Uncertain,
