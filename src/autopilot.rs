@@ -848,7 +848,6 @@ pub struct Options {
     pub budget_min: f64,
     pub max_steps: usize,
     pub focus: Option<Focus>,
-    #[allow(dead_code)] // --require-approval lands in a later commit
     pub require_approval: bool,
     pub tolerance_pct: f64,
     /// e.g. "--backend llama-server --template chatml " — prefixed to every printed command.
@@ -866,7 +865,6 @@ pub fn relevant(records: &[Record], backend_name: &str) -> Vec<Record> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // Interrupted/Declined land with approval + SIGINT handling
 pub enum Stop {
     Budget { next_ms: f64 },
     MaxSteps,
@@ -1317,8 +1315,99 @@ pub struct Session {
     pub spent_ms: f64,
 }
 
+/// Answer at the approval prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Approval {
+    Run,
+    /// Don't run this one; mark it tried and propose the next.
+    Skip,
+    Quit,
+}
+
+/// Ask on the terminal. EOF or anything unrecognised after three tries quits.
+pub fn ask_approval(_p: &Proposal) -> Approval {
+    for _ in 0..3 {
+        let a = crate::predict::ask_line("    run this trial? [y]es / [s]kip / [q]uit: ");
+        match a.as_deref().map(str::to_ascii_lowercase).as_deref() {
+            Some("y" | "yes") => return Approval::Run,
+            Some("s" | "skip" | "n" | "no") => return Approval::Skip,
+            Some("q" | "quit") | None => return Approval::Quit,
+            Some("") if interrupt::requested() => return Approval::Quit,
+            _ => println!("    y, s or q"),
+        }
+    }
+    Approval::Quit
+}
+
+/// Ctrl-C handling: the first SIGINT lets the current trial finish (its rows
+/// and learning are written), then the loop stops; a second one exits at once.
+pub mod interrupt {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static REQUESTED: AtomicBool = AtomicBool::new(false);
+
+    pub fn requested() -> bool {
+        REQUESTED.load(Ordering::SeqCst)
+    }
+
+    #[cfg(unix)]
+    extern "C" fn on_sigint(_: libc::c_int) {
+        if REQUESTED.swap(true, Ordering::SeqCst) {
+            // SAFETY: _exit is async-signal-safe.
+            unsafe { libc::_exit(130) }
+        }
+        let msg = b"\n[autopilot] Ctrl-C: finishing the current trial and writing its learning, then stopping. Press Ctrl-C again to abort now.\n";
+        // SAFETY: write(2) is async-signal-safe; the buffer is static.
+        unsafe {
+            libc::write(2, msg.as_ptr().cast(), msg.len());
+        }
+    }
+
+    /// Install the handler for the duration of a session.
+    pub fn install() {
+        REQUESTED.store(false, Ordering::SeqCst);
+        #[cfg(unix)]
+        // SAFETY: the handler only touches an atomic and async-signal-safe calls.
+        unsafe {
+            libc::signal(
+                libc::SIGINT,
+                on_sigint as extern "C" fn(libc::c_int) as libc::sighandler_t,
+            );
+        }
+    }
+
+    /// Restore default Ctrl-C behaviour.
+    pub fn restore() {
+        #[cfg(unix)]
+        // SAFETY: resetting to the default disposition.
+        unsafe {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn simulate() {
+        REQUESTED.store(true, Ordering::SeqCst);
+    }
+}
+
 /// The real loop: observe → propose → (approve) → run → score → learn → repeat.
 pub fn execute(lab: &mut Lab, opts: &Options) -> Result<Session> {
+    if opts.require_approval && !crate::predict::interactive() {
+        bail!("--require-approval needs an interactive terminal to answer the prompts");
+    }
+    interrupt::install();
+    let res = execute_with(lab, opts, &mut ask_approval);
+    interrupt::restore();
+    res
+}
+
+/// `execute` with the approval prompt injected (tests answer it in code).
+pub fn execute_with(
+    lab: &mut Lab,
+    opts: &Options,
+    approve: &mut dyn FnMut(&Proposal) -> Approval,
+) -> Result<Session> {
     let backend_name = lab.backend.name();
     let mut state = AutopilotState::new(opts.budget_min, opts.max_steps, opts.focus);
     let start = std::time::Instant::now();
@@ -1326,6 +1415,9 @@ pub fn execute(lab: &mut Lab, opts: &Options) -> Result<Session> {
     print_header(&relevant(&all, &backend_name), &backend_name, opts, false);
     let mut trials = Vec::new();
     let stop = loop {
+        if interrupt::requested() {
+            break Stop::Interrupted;
+        }
         let records = relevant(&lab.notebook.all()?, &backend_name);
         state.bottleneck = CostModel::from_records(&records).bottleneck();
         state.spent_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -1335,6 +1427,19 @@ pub fn execute(lab: &mut Lab, opts: &Options) -> Result<Session> {
         }
         let Some(p) = p else { break Stop::NothingLeft };
         print_proposal(state.steps + 1, &p, opts);
+        if opts.require_approval {
+            match approve(&p) {
+                Approval::Run => {}
+                Approval::Skip => {
+                    println!(
+                        "    skipped — not run, not recorded; it won't be proposed again this session."
+                    );
+                    state.tried.insert(p.key.clone());
+                    continue;
+                }
+                Approval::Quit => break Stop::Declined,
+            }
+        }
         println!();
         let outcome = execute_spec(lab, &p, opts.tolerance_pct)?;
         state.steps += 1;
@@ -1346,6 +1451,7 @@ pub fn execute(lab: &mut Lab, opts: &Options) -> Result<Session> {
                 measured_like(&p.predictions, &outcome),
             ));
         }
+        // Always written, even when interrupted: a finished trial is never lost.
         let after = relevant(&lab.notebook.all()?, &backend_name);
         let l = interpret(&p, &outcome, &records, &after, &state, opts, lab);
         learnings::append(&lab.notebook, &l)?;
@@ -1374,6 +1480,190 @@ pub fn execute(lab: &mut Lab, opts: &Options) -> Result<Session> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::backend::{BackendConfig, BackendKind, mock::Mock};
+    use crate::lab::{LabOptions, Template};
+    use crate::notebook::Notebook;
+    use std::sync::Mutex;
+
+    /// The interrupt flag is process-global, so loop tests run one at a time.
+    static LOOP: Mutex<()> = Mutex::new(());
+
+    fn mock_lab(tag: &str) -> (Lab, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "machine-autopilot-{tag}-{}-{}",
+            std::process::id(),
+            crate::notebook::new_id("t")
+        ));
+        let lab = Lab::with_backend(
+            LabOptions {
+                backend: BackendConfig {
+                    kind: BackendKind::Mock,
+                    url: None,
+                    model: None,
+                },
+                watch: "none".into(),
+                label: None,
+                tags: Default::default(),
+                lesson: None,
+                tolerance_pct: 20.0,
+                predictions: Vec::new(),
+                no_predict: false,
+                quiet: true,
+                template: Template::Raw,
+                home: Some(dir.clone()),
+            },
+            Box::new(Mock::instant()),
+        )
+        .unwrap();
+        (lab, dir)
+    }
+
+    fn opts(max_steps: usize, focus: Option<Focus>) -> Options {
+        Options {
+            budget_min: 1e6,
+            max_steps,
+            focus,
+            require_approval: false,
+            tolerance_pct: 20.0,
+            backend_flags: "--backend mock ".into(),
+        }
+    }
+
+    #[test]
+    fn loop_proposes_runs_scores_and_records() {
+        let _g = LOOP.lock().unwrap_or_else(|e| e.into_inner());
+        interrupt::install();
+        let (mut lab, dir) = mock_lab("e2e");
+        let session = execute_with(&mut lab, &opts(6, None), &mut |_| Approval::Run).unwrap();
+        assert_eq!(session.stop, Stop::MaxSteps);
+        assert_eq!(session.trials.len(), 6);
+        assert_eq!(session.trials[0].0.key, "baseline");
+
+        // Normal notebook rows, tagged, with scored Prediction records.
+        let nb = Notebook::open_at(dir.clone()).unwrap();
+        let rows = nb.all().unwrap();
+        let preds: Vec<_> = rows.iter().filter(|r| r.kind == Kind::Prediction).collect();
+        assert_eq!(preds.len(), 6);
+        assert!(rows.iter().all(advisor::is_autopilot));
+        assert!(preds.iter().all(|r| !r.predictions.is_empty()));
+
+        // Scores are exactly what the shared scorer gives.
+        let (p, o) = &session.trials[1];
+        let r = &o.results[0];
+        let again = crate::predict::score(&p.predictions[0].metric, r.predicted, r.actual, 20.0);
+        assert_eq!(again.error_pct, r.error_pct);
+        assert_eq!(again.passed, r.passed);
+
+        // One learning per trial, in the documented shape.
+        let ls = learnings::load(&nb).unwrap();
+        assert_eq!(ls.len(), 6);
+        for (l, (p, o)) in ls.iter().zip(&session.trials) {
+            assert_eq!(l.kind, "learning");
+            assert_eq!(l.key, p.key);
+            assert_eq!(l.group, o.group);
+            assert!(l.ts.ends_with('Z') && l.ts.contains('T'));
+            assert_eq!(
+                l.prediction.keys().collect::<Vec<_>>(),
+                l.actual.keys().collect::<Vec<_>>()
+            );
+            assert_eq!(l.passed, o.results.iter().all(|r| r.passed));
+            assert!(!l.learning.is_empty() && !l.next_priority.is_empty());
+            assert!(l.experiment.starts_with("machine "));
+            assert!(l.simulated);
+        }
+        // A sweep learning reports per-point lists.
+        let sweep = ls.iter().find(|l| l.key.starts_with("sweep:")).unwrap();
+        assert!(sweep.prediction.values().all(|v| v.is_array()));
+
+        // Progress shows them as autopilot predictions and doesn't pass lessons.
+        let prog = advisor::progress(&rows);
+        assert!(prog.iter().all(|p| !p.passed && p.attempts == 0));
+        assert!(prog.iter().map(|p| p.auto_attempts).sum::<usize>() > 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cache_focus_measures_prefix_caching_on_the_mock() {
+        let _g = LOOP.lock().unwrap_or_else(|e| e.into_inner());
+        interrupt::install();
+        let (mut lab, dir) = mock_lab("cache");
+        let s = execute_with(&mut lab, &opts(2, Some(Focus::Cache)), &mut |_| {
+            Approval::Run
+        })
+        .unwrap();
+        assert_eq!(s.trials[1].0.key, "sweep:cache_prompt");
+        let ls = learnings::load(&lab.notebook).unwrap();
+        assert!(
+            ls[1].learning.contains("evaluated 1 of"),
+            "{}",
+            ls[1].learning
+        );
+        assert!(
+            ls[1].passed,
+            "cache prediction should hold on the mock: {:?}",
+            ls[1].error_pct
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn approval_skip_and_quit_run_nothing() {
+        let _g = LOOP.lock().unwrap_or_else(|e| e.into_inner());
+        interrupt::install();
+        let (mut lab, dir) = mock_lab("approve");
+        let mut o = opts(10, None);
+        o.require_approval = true;
+        let mut asked = Vec::new();
+        let s = execute_with(&mut lab, &o, &mut |p| {
+            asked.push(p.key.clone());
+            if asked.len() == 1 {
+                Approval::Skip
+            } else {
+                Approval::Quit
+            }
+        })
+        .unwrap();
+        assert_eq!(s.stop, Stop::Declined);
+        assert!(s.trials.is_empty());
+        assert_eq!(asked.len(), 2);
+        assert_ne!(asked[0], asked[1], "a skipped proposal is not re-proposed");
+        assert!(lab.notebook.all().unwrap().is_empty());
+        assert!(learnings::load(&lab.notebook).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn interrupt_finishes_trial_and_writes_learning() {
+        let _g = LOOP.lock().unwrap_or_else(|e| e.into_inner());
+        interrupt::install();
+        let (mut lab, dir) = mock_lab("sigint");
+        let mut o = opts(10, None);
+        o.require_approval = true;
+        let s = execute_with(&mut lab, &o, &mut |_| {
+            interrupt::simulate(); // Ctrl-C arrives while the trial is about to run
+            Approval::Run
+        })
+        .unwrap();
+        assert_eq!(s.stop, Stop::Interrupted);
+        assert_eq!(s.trials.len(), 1);
+        assert_eq!(learnings::load(&lab.notebook).unwrap().len(), 1);
+        interrupt::install(); // reset for other tests
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn budget_stops_before_overrunning() {
+        let _g = LOOP.lock().unwrap_or_else(|e| e.into_inner());
+        interrupt::install();
+        let (mut lab, dir) = mock_lab("budget");
+        let mut o = opts(10, None);
+        o.budget_min = 0.001; // 60 ms; the baseline is estimated at ~17 s from priors
+        let s = execute_with(&mut lab, &o, &mut |_| Approval::Run).unwrap();
+        assert!(matches!(s.stop, Stop::Budget { .. }));
+        assert!(s.trials.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn empty_notebook_proposes_baseline_then_sweeps_then_agents() {
