@@ -34,6 +34,9 @@ jobs:
           cargo run -q -- sweep --var max-tokens --values 8,16,32 --repeat 2 --quiet --no-predict
           cargo run -q -- agent --tasks 0,1 --critic model --temperature 0.8 --no-predict
           cargo run -q -- progress
+          cargo run -q -- autopilot --dry-run --budget 10
+          cargo run -q -- autopilot --budget 2 --max-steps 4
+          cargo run -q -- learnings
 
   real-model:
     # A real local model on the CI runner's CPU: llama.cpp + Qwen2.5-0.5B (Q4_K_M and Q8_0).
@@ -93,13 +96,27 @@ jobs:
           MACHINE_HOME: ${{ runner.temp }}/real
         run: examples/real-session.sh ./target/release/machine ci-out
 
+      - name: Autopilot on the same notebook
+        env:
+          MACHINE_HOME: ${{ runner.temp }}/real
+          MACHINE_BACKEND: llama-server
+          MACHINE_TEMPLATE: chatml
+        run: |
+          pkill -x llama-server || true; sleep 1
+          ~/llama-bin/llama-server -m ~/models/"$MODEL_Q4" -c 2048 -t "$(nproc)" --port 8080 > ci-out/server-autopilot.log 2>&1 &
+          for _ in $(seq 1 60); do curl -sf localhost:8080/health >/dev/null && break; sleep 1; done
+          ./target/release/machine autopilot --dry-run --budget 10 | tee ci-out/autopilot-dry-run.txt
+          ./target/release/machine autopilot --budget 10 | tee ci-out/autopilot-run.txt
+          ./target/release/machine learnings | tee ci-out/autopilot-learnings.txt
+          cp "$MACHINE_HOME/learnings.jsonl" ci-out/ || true
+
       - name: Job summary
         if: always()
         run: |
           {
             echo '## machine — real local model on the CI runner'
             echo '```'; cat ci-out/00-env.txt 2>/dev/null; echo '```'
-            for f in 03-compare-q4-q8 05-compare-critics 06-progress 06-wrap-up; do
+            for f in 03-compare-q4-q8 05-compare-critics 06-progress 06-wrap-up autopilot-learnings; do
               [ -f "ci-out/$f.txt" ] && { echo "### $f"; echo '```'; cat "ci-out/$f.txt"; echo '```'; }
             done
           } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,212 @@
+$ machine autopilot --budget 10 --backend llama-server --template chatml
+═══ AUTOPILOT ═══
+backend   : llama-server@http://127.0.0.1:8080
+notebook  : 96 rows from this backend
+budget    : 10 min, at most 40 trials
+cost model: decode 35.6 ms/token, prefill 6.35 ms/prompt token, overhead 1.3 ms (measured)
+bottleneck: decode-bound: 93% of a 64-token completion is decode (35.6 ms/token)
+
+#1  sweep:cache_prompt   lesson 3   est 5.1 s
+    why : Prefix caching is the top untried lever. With an identical prompt, a cache hit should re-evaluate ~1 token: prefill 178 ms → 6.4 ms.
+    $ machine sweep --backend llama-server --template chatml --var cache-prompt --values false,true --repeat 5 --warmup 1 --max-tokens 8 --ignore-eos --metric prefill_ms --lesson 3 --label ap-sweep-cache_prompt --predict prefill_ms=178,6.4
+
+═══ SWEEP cache_prompt ∈ {false, true} × 5 runs (+1 warm-up), interleaved ═══
+backend : llama-server@http://127.0.0.1:8080
+model   : models/qwen2.5-0.5b-instruct-q4_k_m.gguf n_ctx=2048
+memory  : llama-server (pid 5924)
+label   : ap-sweep-cache_prompt
+template: Chatml
+tags    : source=autopilot
+only cache_prompt changes; everything else is held at the baseline.
+  warm #1  prefill    28 tok  191.0 ms | decode    8 tok  214.2 ms = 37.4 t/s | wall  407.1 ms | ovh 2.0 ms | rss 586.5 MiB→590.2 MiB
+
+── SWEEP RESULT: prefill_ms by cache_prompt ───────────────────────────
+  cache_prompt           mean        sd    cv%  prompt_t   compl_t  vs first value
+  false                   190      7.72    4.1        28         8  baseline
+  true                   32.3      2.87    8.9         1         8  -83.0%  real difference (|t|≥2)
+
+── PREDICTION vs MEASURED (tolerance ±20%)
+  prefill_ms@cache_prompt=false predicted     177.9 ms  measured     190.4 ms  error   6.6%  ✓ within tolerance
+  prefill_ms@cache_prompt=true predicted       6.4 ms  measured      32.3 ms  error  80.3%  ✗ off — find the log line that explains the gap
+
+── LEARNING (prediction missed)
+  Changing only cache_prompt from false to true moved prefill_ms from 190.4 ms to 32.3 ms (-83%, real difference (|t|≥2)). On a cache hit the server evaluated 1 of 28 prompt tokens. The prefill_ms@cache_prompt=true prediction missed by 80%, so the assumption behind it does not hold here.
+  next: agent:memory_window=1: Every agent run used full history
+
+#2  agent:memory_window=1   lesson 6   est 45.4 s
+    why : Every agent run used full history. Null-hypothesis prediction: a 1-line window changes nothing when episodes are ~2–3 steps. Baseline: 10 episodes, success 50%, 3.1 calls, 4538 ms/task.
+    $ machine agent --backend llama-server --template chatml --memory-window 1 --lesson 6 --label ap-agent-memory_window-1 --predict success=0.50 --predict calls=3.1 --predict wall_ms=4538
+
+═══ AGENT  critic=None  memory_window=1  max_steps=6  tasks=10×1 ═══
+backend : llama-server@http://127.0.0.1:8080
+model   : models/qwen2.5-0.5b-instruct-q4_k_m.gguf n_ctx=2048
+memory  : llama-server (pid 5924)
+label   : ap-agent-memory_window-1
+template: Chatml
+tags    : source=autopilot
+loop: observation → inference → action(CALC tool | ANSWER)
+actor params: max_tokens=32 temperature=0 seed=Some(42)
+  [✗] task  0 r1 answer     288 (truth   2016)  calls  2  tokens   325  wall 2356.6 ms
+  [✗] task  1 r1 answer    none (truth  61200)  calls  6  tokens  1084  wall 8435.1 ms
+  [✓] task  2 r1 answer     605 (truth    605)  calls  2  tokens   351  wall 2844.0 ms
+  [✗] task  3 r1 answer    none (truth  21600)  calls  6  tokens  1007  wall 7079.7 ms
+  [✗] task  4 r1 answer     480 (truth    696)  calls  5  tokens   907  wall 6997.5 ms
+  [✓] task  5 r1 answer      52 (truth     52)  calls  2  tokens   315  wall 2422.0 ms
+  [✓] task  6 r1 answer    2304 (truth   2304)  calls  2  tokens   337  wall 2603.9 ms
+  [✗] task  7 r1 answer    none (truth    760)  calls  6  tokens  1145  wall 9833.8 ms
+  [✗] task  8 r1 answer    1500 (truth  10500)  calls  2  tokens   335  wall 2562.9 ms
+  [✗] task  9 r1 answer    none (truth     13)  calls  6  tokens  1095  wall 8029.8 ms
+
+── AGENT SUMMARY (10 episodes) ────────────────────────────────
+  metric                   mean        sd    cv%        p50        p95        min        max
+  success                  0.30      0.48  161.0       0.00       1.00       0.00       1.00
+  steps                    3.90      2.02   51.9       3.50       6.00       2.00       6.00
+  calls                    3.90      2.02   51.9       3.50       6.00       2.00       6.00
+  critic_calls             0.00      0.00    0.0       0.00       0.00       0.00       0.00
+  format_errors            0.70      1.25  178.8       0.00       3.00       0.00       3.00
+  total_tokens              690       382   55.4        629       1122        315       1145
+  wall_ms                  5317      3011   56.6       4921       9204       2357       9834
+  critic_ms                0.00      0.00    0.0       0.00       0.00       0.00       0.00
+  peak_rss_mib              604      0.61    0.1        604        604        602        604
+
+  accuracy            30%  (3/10)
+  tokens per correct  2300
+  ms per correct      17722
+
+── PREDICTION vs MEASURED (tolerance ±20%)
+  success                  predicted          50%  measured          30%  error  20.0%  ✓ within tolerance
+  calls                    predicted         3.10  measured         3.90  error  20.5%  ✗ off — find the log line that explains the gap
+  wall_ms                  predicted    4538.1 ms  measured    5316.5 ms  error  14.6%  ✓ within tolerance
+
+── LEARNING (prediction missed)
+  Changing only memory_window moved success 50% → 30%, calls 3.1 → 3.9, and wall 4538.1 ms → 5316.5 ms per task (+17%). The calls prediction missed by 21%, so the assumption behind it does not hold here.
+  next: agent:cache_prompt: The agent re-sends ~174 prompt tokens per call with an unchanging prefix
+
+#3  agent:cache_prompt   lesson 6   est 45.4 s
+    why : The agent re-sends ~174 prompt tokens per call with an unchanging prefix. Prediction: prefix caching saves ~2935 ms/task (prefill of 174 → ~25 tokens per call); success and calls unchanged. Baseline: 10 episodes, success 50%, 3.1 calls, 4538 ms/task.
+    $ machine agent --backend llama-server --template chatml --cache-prompt --lesson 6 --label ap-agent-cache_prompt --predict success=0.50 --predict calls=3.1 --predict wall_ms=1603
+
+═══ AGENT  critic=None  memory_window=all  max_steps=6  tasks=10×1 ═══
+backend : llama-server@http://127.0.0.1:8080
+model   : models/qwen2.5-0.5b-instruct-q4_k_m.gguf n_ctx=2048
+memory  : llama-server (pid 5924)
+label   : ap-agent-cache_prompt
+template: Chatml
+tags    : source=autopilot
+loop: observation → inference → action(CALC tool | ANSWER)
+actor params: max_tokens=32 temperature=0 seed=Some(42)
+  [✗] task  0 r1 answer     288 (truth   2016)  calls  2  tokens    78  wall 1035.2 ms
+  [✗] task  1 r1 answer   20400 (truth  61200)  calls  3  tokens   117  wall 1731.2 ms
+  [✓] task  2 r1 answer     605 (truth    605)  calls  2  tokens   101  wall 1484.6 ms
+  [✗] task  3 r1 answer    none (truth  21600)  calls  6  tokens   247  wall 3604.0 ms
+  [✓] task  4 r1 answer     696 (truth    696)  calls  3  tokens   125  wall 1767.9 ms
+  [✓] task  5 r1 answer      52 (truth     52)  calls  2  tokens    74  wall 1079.5 ms
+  [✓] task  6 r1 answer    2304 (truth   2304)  calls  2  tokens    87  wall 1222.8 ms
+  [✓] task  7 r1 answer     760 (truth    760)  calls  3  tokens   124  wall 1730.3 ms
+  [✗] task  8 r1 answer    1500 (truth  10500)  calls  2  tokens    87  wall 1201.6 ms
+  [✗] task  9 r1 answer    none (truth     13)  calls  6  tokens   259  wall 3696.4 ms
+
+── AGENT SUMMARY (10 episodes) ────────────────────────────────
+  metric                   mean        sd    cv%        p50        p95        min        max
+  success                  0.50      0.53  105.4       0.50       1.00       0.00       1.00
+  steps                    3.10      1.60   51.5       2.50       6.00       2.00       6.00
+  calls                    3.10      1.60   51.5       2.50       6.00       2.00       6.00
+  critic_calls             0.00      0.00    0.0       0.00       0.00       0.00       0.00
+  format_errors            0.50      1.08  216.0       0.00       2.55       0.00       3.00
+  total_tokens              130      67.4   51.9        109        254       74.0        259
+  wall_ms                  1855       985   53.1       1607       3655       1035       3696
+  critic_ms                0.00      0.00    0.0       0.00       0.00       0.00       0.00
+  peak_rss_mib              606      1.57    0.3        607        607        604        607
+
+  accuracy            50%  (5/10)
+  tokens per correct  260
+  ms per correct      3711
+
+── PREDICTION vs MEASURED (tolerance ±20%)
+  success                  predicted          50%  measured          50%  error   0.0%  ✓ within tolerance
+  calls                    predicted         3.10  measured         3.10  error   0.0%  ✓ within tolerance
+  wall_ms                  predicted    1603.0 ms  measured    1855.3 ms  error  13.6%  ✓ within tolerance
+
+── LEARNING (predictions held)
+  Changing only cache_prompt moved success 50% → 50%, calls 3.1 → 3.1, and wall 4538.1 ms → 1855.3 ms per task (-59%). All 3 prediction(s) were within ±20%, so the cost model explains this result.
+  next: confirm:sweep:cache_prompt: `sweep:cache_prompt` missed its prediction
+
+#4  confirm:sweep:cache_prompt   lesson 2   est 5.1 s
+    why : `sweep:cache_prompt` missed its prediction. Re-running it unchanged, predicting the measured values reproduce, separates a wrong model from a noisy measurement.
+    $ machine sweep --backend llama-server --template chatml --var cache-prompt --values false,true --repeat 5 --warmup 1 --max-tokens 8 --ignore-eos --metric prefill_ms --lesson 2 --label ap-confirm-sweep-cache_prompt --predict prefill_ms=190,32.3
+
+═══ SWEEP cache_prompt ∈ {false, true} × 5 runs (+1 warm-up), interleaved ═══
+backend : llama-server@http://127.0.0.1:8080
+model   : models/qwen2.5-0.5b-instruct-q4_k_m.gguf n_ctx=2048
+memory  : llama-server (pid 5924)
+label   : ap-confirm-sweep-cache_prompt
+template: Chatml
+tags    : source=autopilot
+only cache_prompt changes; everything else is held at the baseline.
+  warm #1  prefill    28 tok  205.6 ms | decode    8 tok  205.1 ms = 39.0 t/s | wall  414.1 ms | ovh 3.4 ms | rss 607.2 MiB→610.3 MiB
+
+── SWEEP RESULT: prefill_ms by cache_prompt ───────────────────────────
+  cache_prompt           mean        sd    cv%  prompt_t   compl_t  vs first value
+  false                   200      5.21    2.6        28         8  baseline
+  true                   37.1      3.22    8.7         1         8  -81.4%  real difference (|t|≥2)
+
+── PREDICTION vs MEASURED (tolerance ±20%)
+  prefill_ms@cache_prompt=false predicted     190.4 ms  measured     199.8 ms  error   4.7%  ✓ within tolerance
+  prefill_ms@cache_prompt=true predicted      32.3 ms  measured      37.1 ms  error  13.1%  ✓ within tolerance
+
+── LEARNING (predictions held)
+  Changing only cache_prompt from false to true moved prefill_ms from 199.8 ms to 37.1 ms (-81%, real difference (|t|≥2)). On a cache hit the server evaluated 1 of 28 prompt tokens. All 2 prediction(s) were within ±20%, so the cost model explains this result.
+  next: confirm:agent:memory_window=1: `agent:memory_window=1` missed its prediction
+
+#5  confirm:agent:memory_window=1   lesson 2   est 53.2 s
+    why : `agent:memory_window=1` missed its prediction. Re-running it unchanged, predicting the measured values reproduce, separates a wrong model from a noisy measurement.
+    $ machine agent --backend llama-server --template chatml --memory-window 1 --lesson 2 --label ap-confirm-agent-memory_window-1 --predict success=0.30 --predict calls=3.9 --predict wall_ms=5317
+
+═══ AGENT  critic=None  memory_window=1  max_steps=6  tasks=10×1 ═══
+backend : llama-server@http://127.0.0.1:8080
+model   : models/qwen2.5-0.5b-instruct-q4_k_m.gguf n_ctx=2048
+memory  : llama-server (pid 5924)
+label   : ap-confirm-agent-memory_window-1
+template: Chatml
+tags    : source=autopilot
+loop: observation → inference → action(CALC tool | ANSWER)
+actor params: max_tokens=32 temperature=0 seed=Some(42)
+  [✗] task  0 r1 answer     288 (truth   2016)  calls  2  tokens   325  wall 2475.6 ms
+  [✗] task  1 r1 answer    none (truth  61200)  calls  6  tokens  1084  wall 8723.6 ms
+  [✓] task  2 r1 answer     605 (truth    605)  calls  2  tokens   351  wall 2806.8 ms
+  [✗] task  3 r1 answer    none (truth  21600)  calls  6  tokens  1007  wall 6790.0 ms
+  [✗] task  4 r1 answer     480 (truth    696)  calls  5  tokens   907  wall 7051.5 ms
+  [✓] task  5 r1 answer      52 (truth     52)  calls  2  tokens   315  wall 2543.1 ms
+  [✓] task  6 r1 answer    2304 (truth   2304)  calls  2  tokens   337  wall 2601.4 ms
+  [✗] task  7 r1 answer    none (truth    760)  calls  6  tokens  1145  wall 9694.5 ms
+  [✗] task  8 r1 answer    1500 (truth  10500)  calls  2  tokens   335  wall 2563.8 ms
+  [✗] task  9 r1 answer    none (truth     13)  calls  6  tokens  1095  wall 8253.4 ms
+
+── AGENT SUMMARY (10 episodes) ────────────────────────────────
+  metric                   mean        sd    cv%        p50        p95        min        max
+  success                  0.30      0.48  161.0       0.00       1.00       0.00       1.00
+  steps                    3.90      2.02   51.9       3.50       6.00       2.00       6.00
+  calls                    3.90      2.02   51.9       3.50       6.00       2.00       6.00
+  critic_calls             0.00      0.00    0.0       0.00       0.00       0.00       0.00
+  format_errors            0.70      1.25  178.8       0.00       3.00       0.00       3.00
+  total_tokens              690       382   55.4        629       1122        315       1145
+  wall_ms                  5350      3011   56.3       4798       9258       2476       9694
+  critic_ms                0.00      0.00    0.0       0.00       0.00       0.00       0.00
+  peak_rss_mib              610      0.03    0.0        610        610        610        610
+
+  accuracy            30%  (3/10)
+  tokens per correct  2300
+  ms per correct      17835
+
+── PREDICTION vs MEASURED (tolerance ±20%)
+  success                  predicted          30%  measured          30%  error   0.0%  ✓ within tolerance
+  calls                    predicted         3.90  measured         3.90  error   0.0%  ✓ within tolerance
+  wall_ms                  predicted    5316.5 ms  measured    5350.4 ms  error   0.6%  ✓ within tolerance
+
+── LEARNING (predictions held)
+  Changing only memory_window moved success 50% → 30%, calls 3.1 → 3.9, and wall 4538.1 ms → 5350.4 ms per task (+18%). All 3 prediction(s) were within ±20%, so the cost model explains this result.
+  next: nothing left in scope. Advisor: Every built-in knob has been tried. Change the environment instead: add a second tool (e.g. a unit converter) and measure whether tool-choice errors cost more calls than they save.
+
+═══ AUTOPILOT DONE ═══
+5 trial(s) in 2.2 min, 3 with every prediction within tolerance. Stopped: no high-value single-variable experiment remains.
+Review: machine learnings   ·   machine progress   ·   machine wrap-up

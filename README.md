@@ -58,6 +58,7 @@ machine lesson         # your current lesson card
 | 6. Closing the loop | `machine next` · `machine wrap-up` | choosing the next experiment from recorded numbers |
 
 ```sh
+machine autopilot      # run the cycle unattended (see Autopilot below)
 machine progress       # lessons passed by prediction accuracy
 machine next           # one concrete untried experiment, with the number that motivates it
 machine wrap-up        # end-of-session check, weakest idea, WHAT SHOULD I BUILD NEXT?
@@ -91,6 +92,90 @@ machine compare --label q4 --label q8
 
 `compare` warns when two labels differ in more than one setting.
 
+## Autopilot
+
+`machine autopilot` runs the same cycle unattended: observe the notebook →
+propose **one** single-variable experiment with numeric predictions → run it
+through the normal `run` / `sweep` / `agent` code → score with the same scorer →
+write a learning → repeat, until the budget or the untried levers run out.
+
+```sh
+machine autopilot --dry-run --budget 10   # show the plan, run nothing
+machine autopilot --budget 30             # run it (Ctrl-C finishes the current trial, then stops)
+machine autopilot --require-approval      # y / skip / quit before every trial
+machine autopilot --focus cache           # prefill | decode | agent | quant | critic | cache
+machine learnings                         # what it learned (--json for raw records)
+```
+
+What it will and won't do:
+
+- **Deterministic proposer** (no LLM). It works through the advisor's untried
+  levers in `machine next` order, then re-runs any trial whose prediction missed
+  ("does it reproduce?").
+- **Predictions come from your measurements**: a cost model of ms/token decode,
+  ms/prompt-token prefill and overhead, plus the latest agent baseline. With an
+  empty notebook it uses stated priors and says so.
+- **Every trial is a command a human could type.** It's printed in full, with
+  its `--predict` values, and its notebook rows are ordinary rows tagged
+  `source=autopilot`.
+- **Never touches load-time knobs** (quant, `-t`, `-ngl`, `-c`). It tells you
+  when one is worth testing and leaves the restart to you.
+- **Never changes two things at once.** Specs are validated to change exactly one
+  setting, and agent results are checked against their baseline with `compare`'s
+  multi-setting detector; a confounded result is flagged in its learning.
+- **Doesn't pass lessons for you.** `progress` shows autopilot predictions
+  separately (`autopilot a/b`), and only your own predictions gate lessons.
+
+Each trial appends one record to `learnings.jsonl` next to the notebook (the last
+five fields link it back to the notebook rows):
+
+```json
+{"type":"learning","ts":"2026-10-23T00:05:07Z",
+ "experiment":"machine sweep --backend llama-server --template chatml --var cache-prompt --values false,true ... --predict prefill_ms=178,6.4",
+ "prediction":{"prefill_ms":[177.883,6.353]},"actual":{"prefill_ms":[190.367,32.298]},"error_pct":{"prefill_ms":80.3},"passed":false,
+ "learning":"Changing only cache_prompt from false to true moved prefill_ms from 190.4 ms to 32.3 ms (-83%, real difference (|t|≥2)). On a cache hit the server evaluated 1 of 28 prompt tokens. The prefill_ms@cache_prompt=true prediction missed by 80%, so the assumption behind it does not hold here.",
+ "next_priority":"agent:memory_window=1: Every agent run used full history",
+ "group":"grp-18e0ffcc2c67034b","key":"sweep:cache_prompt","single_variable":true,"backend":"llama-server@http://127.0.0.1:8080","simulated":false}
+```
+
+Dry run on the real notebook from [`examples/`](examples/README.md):
+
+```
+$ machine autopilot --dry-run --budget 10 --backend llama-server --template chatml
+═══ AUTOPILOT (dry run — nothing will execute) ═══
+backend   : llama-server@http://127.0.0.1:8080
+notebook  : 96 rows from this backend
+budget    : 10 min, at most 40 trials
+cost model: decode 35.6 ms/token, prefill 6.35 ms/prompt token, overhead 1.3 ms (measured)
+bottleneck: decode-bound: 93% of a 64-token completion is decode (35.6 ms/token)
+
+#1  sweep:cache_prompt   lesson 3   est 5.1 s
+    why : Prefix caching is the top untried lever. With an identical prompt, a cache hit should re-evaluate ~1 token: prefill 178 ms → 6.4 ms.
+    $ machine sweep --backend llama-server --template chatml --var cache-prompt --values false,true --repeat 5 --warmup 1 --max-tokens 8 --ignore-eos --metric prefill_ms --lesson 3 --label ap-sweep-cache_prompt --predict prefill_ms=178,6.4
+
+#2  agent:memory_window=1   lesson 6   est 45.4 s
+    why : Every agent run used full history. Null-hypothesis prediction: a 1-line window changes nothing when episodes are ~2–3 steps. Baseline: 10 episodes, success 50%, 3.1 calls, 4538 ms/task.
+    $ machine agent --backend llama-server --template chatml --memory-window 1 --lesson 6 --label ap-agent-memory_window-1 --predict success=0.50 --predict calls=3.1 --predict wall_ms=4538
+
+#3  agent:cache_prompt   lesson 6   est 45.4 s
+    why : The agent re-sends ~174 prompt tokens per call with an unchanging prefix. Prediction: prefix caching saves ~2935 ms/task (prefill of 174 → ~25 tokens per call); success and calls unchanged. Baseline: 10 episodes, success 50%, 3.1 calls, 4538 ms/task.
+    $ machine agent --backend llama-server --template chatml --cache-prompt --lesson 6 --label ap-agent-cache_prompt --predict success=0.50 --predict calls=3.1 --predict wall_ms=1603
+
+── would run 3 trial(s), ~1.6 min of the 10 min budget. Stops: no high-value single-variable experiment remains.
+```
+
+Running that plan for real took 2.2 minutes and found three things
+([transcript](examples/autopilot/run.txt), [learnings](examples/autopilot/learnings.txt)):
+
+- A prompt-cache hit evaluated 1 of 28 tokens, but prefill only fell from 190 ms
+  to 32 ms. The predicted ~6 ms was wrong because prefill has a fixed per-call
+  cost that a per-token model can't see.
+- Prefix caching on the agent cut wall time per task from 4.5 s to 1.9 s
+  (−59%), with success and calls unchanged. All three predictions held.
+- A 1-line memory window *hurt*: success fell from 50% to 30% and calls rose
+  from 3.1 to 3.9. The prediction of no change was wrong, and a replication
+  reproduced the result.
+
 ## What it measures
 
 | metric | source |
@@ -115,9 +200,12 @@ src/agent.rs          observation → inference → tool → observation; critic
 src/calc.rs           the agent's tool: exact integer arithmetic
 src/stats.rs          mean, sd, p50/p95, cv, Welch t
 src/predict.rs        prediction capture and scoring
-src/advisor.rs        progress gating, `next`, `wrap-up`
+src/advisor.rs        progress gating, `next`, `wrap-up`, untried levers
+src/autopilot.rs      deterministic proposer, cost model, unattended loop
+src/learnings.rs      learnings.jsonl records and `machine learnings`
 src/lessons.rs        the six lesson cards
 .machine/notebook.jsonl   append-only raw data (override with MACHINE_HOME)
+.machine/learnings.jsonl  one interpreted record per autopilot trial
 ```
 
 ## CI
@@ -126,5 +214,6 @@ src/lessons.rs        the six lesson cards
 **real-model job**: it builds a pinned `llama-server` (static, portable CPU flags),
 downloads Qwen2.5-0.5B-Instruct Q4_K_M and Q8_0 from Hugging Face, caches both
 with `actions/cache`, runs [`examples/real-session.sh`](examples/real-session.sh),
-writes the key tables to the job summary and uploads transcripts + notebook as an
-artifact. Prediction misses on different hardware don't fail the build — they're data.
+then runs `machine autopilot --budget 10` on the resulting notebook, writes the key
+tables and the autopilot's learnings to the job summary, and uploads transcripts,
+notebook and learnings as an artifact. Prediction misses on different hardware don't fail the build — they're data.

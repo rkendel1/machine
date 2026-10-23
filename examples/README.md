@@ -156,3 +156,12 @@ WHAT SHOULD I BUILD NEXT?
 Then the same switch on the agent (`machine agent --cache-prompt`): since
 prefill is roughly three quarters of each agent call here, prefix caching is the largest
 untested lever on this box.
+
+## Autopilot on the same notebook ([`autopilot/`](autopilot/))
+
+`machine autopilot --budget 10` read this notebook, saw that every lever except
+prefix caching and the memory window had been tried, and ran 5 trials in 2.2 min
+([dry run](autopilot/dry-run.txt), [run](autopilot/run.txt),
+[learnings](autopilot/learnings.txt), [raw](autopilot/learnings.jsonl)). The
+headline: prefix caching cut the agent's wall time per task by 59% (4.5 s → 1.9 s)
+at the same accuracy.

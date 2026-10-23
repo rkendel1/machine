@@ -1,0 +1,21 @@
+$ machine autopilot --dry-run --budget 10 --backend llama-server --template chatml
+═══ AUTOPILOT (dry run — nothing will execute) ═══
+backend   : llama-server@http://127.0.0.1:8080
+notebook  : 96 rows from this backend
+budget    : 10 min, at most 40 trials
+cost model: decode 35.6 ms/token, prefill 6.35 ms/prompt token, overhead 1.3 ms (measured)
+bottleneck: decode-bound: 93% of a 64-token completion is decode (35.6 ms/token)
+
+#1  sweep:cache_prompt   lesson 3   est 5.1 s
+    why : Prefix caching is the top untried lever. With an identical prompt, a cache hit should re-evaluate ~1 token: prefill 178 ms → 6.4 ms.
+    $ machine sweep --backend llama-server --template chatml --var cache-prompt --values false,true --repeat 5 --warmup 1 --max-tokens 8 --ignore-eos --metric prefill_ms --lesson 3 --label ap-sweep-cache_prompt --predict prefill_ms=178,6.4
+
+#2  agent:memory_window=1   lesson 6   est 45.4 s
+    why : Every agent run used full history. Null-hypothesis prediction: a 1-line window changes nothing when episodes are ~2–3 steps. Baseline: 10 episodes, success 50%, 3.1 calls, 4538 ms/task.
+    $ machine agent --backend llama-server --template chatml --memory-window 1 --lesson 6 --label ap-agent-memory_window-1 --predict success=0.50 --predict calls=3.1 --predict wall_ms=4538
+
+#3  agent:cache_prompt   lesson 6   est 45.4 s
+    why : The agent re-sends ~174 prompt tokens per call with an unchanging prefix. Prediction: prefix caching saves ~2935 ms/task (prefill of 174 → ~25 tokens per call); success and calls unchanged. Baseline: 10 episodes, success 50%, 3.1 calls, 4538 ms/task.
+    $ machine agent --backend llama-server --template chatml --cache-prompt --lesson 6 --label ap-agent-cache_prompt --predict success=0.50 --predict calls=3.1 --predict wall_ms=1603
+
+── would run 3 trial(s), ~1.6 min of the 10 min budget. Stops: no high-value single-variable experiment remains.
