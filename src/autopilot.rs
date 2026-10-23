@@ -1406,11 +1406,20 @@ pub mod interrupt {
 
 /// The real loop: observe → propose → (approve) → run → score → learn → repeat.
 pub fn execute(lab: &mut Lab, opts: &Options) -> Result<Session> {
+    execute_planner(lab, opts, &mut Checklist)
+}
+
+/// The interactive loop (terminal approval, Ctrl-C handling) with any planner.
+pub fn execute_planner(
+    lab: &mut Lab,
+    opts: &Options,
+    planner: &mut dyn Planner,
+) -> Result<Session> {
     if opts.require_approval && !crate::predict::interactive() {
         bail!("--require-approval needs an interactive terminal to answer the prompts");
     }
     interrupt::install();
-    let res = execute_with(lab, opts, &mut ask_approval);
+    let res = execute_planned(lab, opts, &mut ask_approval, planner);
     interrupt::restore();
     res
 }
@@ -1439,6 +1448,7 @@ impl Planner for Checklist {
 }
 
 /// `execute` with the approval prompt injected (tests answer it in code).
+#[cfg(test)]
 pub fn execute_with(
     lab: &mut Lab,
     opts: &Options,
@@ -1531,18 +1541,16 @@ pub fn execute_planned(
 }
 
 #[cfg(test)]
-mod tests {
+pub mod test_support {
     use super::*;
-
     use crate::backend::{BackendConfig, BackendKind, mock::Mock};
     use crate::lab::{LabOptions, Template};
-    use crate::notebook::Notebook;
     use std::sync::Mutex;
 
     /// The interrupt flag is process-global, so loop tests run one at a time.
-    static LOOP: Mutex<()> = Mutex::new(());
+    pub static LOOP: Mutex<()> = Mutex::new(());
 
-    fn mock_lab(tag: &str) -> (Lab, std::path::PathBuf) {
+    pub fn mock_lab(tag: &str) -> (Lab, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "machine-autopilot-{tag}-{}-{}",
             std::process::id(),
@@ -1572,7 +1580,7 @@ mod tests {
         (lab, dir)
     }
 
-    fn opts(max_steps: usize, focus: Option<Focus>) -> Options {
+    pub fn opts(max_steps: usize, focus: Option<Focus>) -> Options {
         Options {
             budget_min: 1e6,
             max_steps,
@@ -1582,6 +1590,14 @@ mod tests {
             backend_flags: "--backend mock ".into(),
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use super::test_support::*;
+    use crate::notebook::Notebook;
 
     #[test]
     fn loop_proposes_runs_scores_and_records() {

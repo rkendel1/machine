@@ -14,6 +14,7 @@ mod memory;
 mod metrics;
 mod notebook;
 mod predict;
+mod scientist;
 mod stats;
 
 use anyhow::{Result, bail};
@@ -237,6 +238,55 @@ enum Cmd {
         #[arg(long, default_value_t = predict::DEFAULT_TOLERANCE_PCT)]
         tolerance: f64,
     },
+    /// Fit the current cost models and effects from the notebook (no new runs).
+    Analyze {
+        #[command(flatten)]
+        b: BackendArgs,
+    },
+    /// Print the explicit belief state; --what-if asks the surrogate about a configuration.
+    Beliefs {
+        #[command(flatten)]
+        b: BackendArgs,
+        /// Print beliefs.json instead of the table.
+        #[arg(long)]
+        json: bool,
+        /// e.g. "prompt_tokens=512 max_tokens=64 cache=true"
+        #[arg(long)]
+        what_if: Option<String>,
+    },
+    /// Rank the next experiments by expected learning × value ÷ cost; --loop runs them.
+    Scientist {
+        #[command(flatten)]
+        b: BackendArgs,
+        /// Run the selected experiments (autopilot loop with the scientist's selector).
+        #[arg(long = "loop")]
+        run_loop: bool,
+        /// Wall-clock budget in minutes (--loop).
+        #[arg(long, default_value_t = 45.0)]
+        budget: f64,
+        #[arg(long, default_value_t = 40)]
+        max_steps: usize,
+        #[arg(long, value_enum)]
+        focus: Option<autopilot::Focus>,
+        /// With --loop: print the sequence it would run, then exit.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        require_approval: bool,
+        #[arg(long, default_value_t = predict::DEFAULT_TOLERANCE_PCT)]
+        tolerance: f64,
+        /// How many ranked candidates to show.
+        #[arg(long, default_value_t = 8)]
+        top: usize,
+    },
+    /// Write a markdown research note from beliefs, ranking and learnings.
+    Report {
+        #[command(flatten)]
+        b: BackendArgs,
+        /// Write to this file instead of stdout.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
     /// What the autopilot learned, one entry per trial.
     Learnings {
         /// Print the raw JSONL records.
@@ -300,6 +350,134 @@ fn make_lab(c: &Common, quiet: bool) -> Result<lab::Lab> {
         template: c.b.template,
         home: None,
     })
+}
+
+/// Notebook rows and learnings for the selected backend, with a hint when
+/// the notebook has data only for other backends.
+fn scientific_inputs(
+    b: &BackendArgs,
+) -> Result<(Vec<notebook::Record>, Vec<learnings::Learning>, String)> {
+    let nb = notebook::Notebook::open()?;
+    let all = nb.all()?;
+    let name = backend::build(&b.config())?.name();
+    let records = autopilot::relevant(&all, &name);
+    if records.is_empty() && !all.is_empty() {
+        let others: std::collections::BTreeSet<&str> =
+            all.iter().map(|r| r.backend.as_str()).collect();
+        eprintln!(
+            "note: no rows for {name}; the notebook has rows for: {}. Pass --backend (and --url) to select one.",
+            others.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    let learned = learnings::load(&nb)?
+        .into_iter()
+        .filter(|l| l.backend == name)
+        .collect();
+    Ok((records, learned, name))
+}
+
+fn scientist_once(
+    records: &[notebook::Record],
+    learned: &[learnings::Learning],
+    name: &str,
+    opts: &autopilot::Options,
+    top: usize,
+) {
+    use scientist::{analyze, beliefs::Status, selector};
+    let a = analyze::analyze(records, learned, name);
+    let count = |s: Status| a.beliefs.beliefs.iter().filter(|b| b.status == s).count();
+    println!("═══ SCIENTIST ═══  {name}");
+    println!(
+        "beliefs: {} known, {} uncertain, {} untested  ·  {} anomalies  (details: machine analyze / machine beliefs)",
+        count(Status::Known),
+        count(Status::Uncertain),
+        count(Status::Untested),
+        a.beliefs.anomalies.len()
+    );
+    for an in &a.beliefs.anomalies {
+        if !an.key.starts_with("prediction_miss") {
+            println!("  ✗ {}", an.title);
+        }
+    }
+    let state = autopilot::AutopilotState::new(opts.budget_min, opts.max_steps, opts.focus);
+    if selector::sparse(&a) {
+        println!(
+            "\nData is too sparse to steer by beliefs (<{} run rows or no fitted lines).",
+            selector::MIN_ROWS
+        );
+        if let Some(p) = autopilot::propose_next(&state, records) {
+            println!("Fallback — the deterministic checklist's next trial:");
+            autopilot::print_proposal(1, &p, opts);
+        }
+        return;
+    }
+    println!(
+        "\n── RANKED NEXT EXPERIMENTS (score = gain × (0.25 + 0.75·value) / (1 + log2(1 + cost_s/10)))"
+    );
+    let ranked = selector::rank(&a, records, &state);
+    selector::print_ranking(&ranked, top, &opts.backend_flags);
+    if let Some(p) = autopilot::propose_next(&state, records) {
+        println!(
+            "\n  (the deterministic checklist would run next: {})",
+            p.key
+        );
+    }
+    println!(
+        "\nRun them: machine scientist --loop --budget {:.0}",
+        opts.budget_min
+    );
+}
+
+fn scientist_dry_run(records: &[notebook::Record], name: &str, opts: &autopilot::Options) {
+    use scientist::{analyze, selector};
+    let a = analyze::analyze(records, &[], name);
+    autopilot::print_header(
+        records,
+        name,
+        opts,
+        true,
+        "scientist (expected information gain × value ÷ cost)",
+    );
+    let mut state = autopilot::AutopilotState::new(opts.budget_min, opts.max_steps, opts.focus);
+    let mut n = 0;
+    let stop = loop {
+        let next = if selector::sparse(&a) {
+            autopilot::propose_next(&state, records).map(|p| (p, None))
+        } else {
+            selector::rank(&a, records, &state)
+                .into_iter()
+                .find(|c| c.score >= selector::MIN_SCORE)
+                .map(|c| {
+                    let s = format!(
+                        "score {:.3} = gain {:.2} × value {:.2}",
+                        c.score, c.gain, c.value
+                    );
+                    (c.proposal, Some(s))
+                })
+        };
+        if let Some(stop) = autopilot::gate(&state, next.as_ref().map(|n| &n.0)) {
+            break stop;
+        }
+        let Some((p, score)) = next else {
+            break autopilot::Stop::NothingLeft;
+        };
+        n += 1;
+        autopilot::print_proposal(n, &p, opts);
+        if let Some(s) = score {
+            println!("    {s}");
+        }
+        state.tried.insert(p.key.clone());
+        state.spent_ms += p.est_ms;
+        state.steps += 1;
+    };
+    println!(
+        "\n── would run {n} trial(s), ~{} of the {:.0} min budget. Stops: {stop}.",
+        autopilot::fmt_ms(state.spent_ms),
+        opts.budget_min
+    );
+    println!(
+        "   (scores here use today's beliefs; the real loop refits after every trial and re-ranks)"
+    );
 }
 
 fn level(q: &str) -> u8 {
@@ -504,6 +682,104 @@ fn main() -> Result<()> {
                     session.stop
                 );
                 println!("Review: machine learnings   ·   machine progress   ·   machine wrap-up");
+            }
+        }
+        Cmd::Analyze { b } => {
+            let (records, learned, name) = scientific_inputs(&b)?;
+            let a = scientist::analyze::analyze(&records, &learned, &name);
+            scientist::analyze::print(&a);
+            let nb = notebook::Notebook::open()?;
+            if !records.is_empty() {
+                let p = a.beliefs.save(&nb.dir())?;
+                println!("\nbeliefs saved to {}", p.display());
+            }
+            let state = autopilot::AutopilotState::new(1e9, 1000, None);
+            let ranked = scientist::selector::rank(&a, &records, &state);
+            println!("\n── REMAINING HIGH-VALUE EXPERIMENTS");
+            if scientist::selector::sparse(&a) {
+                println!(
+                    "  (data too sparse for the selector — `machine autopilot` will gather the basics)"
+                );
+            } else {
+                scientist::selector::print_ranking(&ranked, 6, &b.flags());
+            }
+        }
+        Cmd::Beliefs { b, json, what_if } => {
+            let (records, learned, name) = scientific_inputs(&b)?;
+            let a = scientist::analyze::analyze(&records, &learned, &name);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&a.beliefs)?);
+            } else if let Some(q) = what_if {
+                let q = scientist::surrogate::CallQuery::parse(&q, a.surrogate.base_prompt_tokens)?;
+                a.surrogate.print_query(&q);
+            } else {
+                a.beliefs.print();
+            }
+        }
+        Cmd::Scientist {
+            b,
+            run_loop,
+            budget,
+            max_steps,
+            focus,
+            dry_run,
+            require_approval,
+            tolerance,
+            top,
+        } => {
+            let (records, learned, name) = scientific_inputs(&b)?;
+            let opts = autopilot::Options {
+                budget_min: budget,
+                max_steps,
+                focus,
+                require_approval,
+                tolerance_pct: tolerance,
+                backend_flags: b.flags(),
+            };
+            if !run_loop {
+                scientist_once(&records, &learned, &name, &opts, top);
+            } else if dry_run {
+                scientist_dry_run(&records, &name, &opts);
+            } else {
+                let nb = notebook::Notebook::open()?;
+                let mut lab = lab::Lab::new(lab::LabOptions {
+                    backend: b.config(),
+                    watch: b.watch.clone(),
+                    label: None,
+                    tags: BTreeMap::new(),
+                    lesson: None,
+                    tolerance_pct: tolerance,
+                    predictions: Vec::new(),
+                    no_predict: false,
+                    quiet: false,
+                    template: b.template,
+                    home: None,
+                })?;
+                let mut planner = scientist::selector::Scientist::new(&name, Some(nb.dir()));
+                let session = autopilot::execute_planner(&mut lab, &opts, &mut planner)?;
+                println!(
+                    "{} trial(s) in {}. Stopped: {}.",
+                    session.trials.len(),
+                    autopilot::fmt_ms(session.spent_ms),
+                    session.stop
+                );
+                println!(
+                    "Review: machine beliefs   ·   machine learnings   ·   machine report --out report.md"
+                );
+            }
+        }
+        Cmd::Report { b, out } => {
+            let (records, learned, name) = scientific_inputs(&b)?;
+            let a = scientist::analyze::analyze(&records, &learned, &name);
+            let state = autopilot::AutopilotState::new(1e9, 1000, None);
+            let ranked = scientist::selector::rank(&a, &records, &state);
+            let md = scientist::report::markdown(&a, &ranked, &learned, &b.flags());
+            match out {
+                Some(p) => {
+                    std::fs::write(&p, md)?;
+                    println!("wrote {}", p.display());
+                }
+                None => print!("{md}"),
             }
         }
         Cmd::Learnings { json, tail } => {
