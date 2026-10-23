@@ -8,6 +8,7 @@ mod calc;
 mod env;
 mod experiment;
 mod lab;
+mod learnings;
 mod lessons;
 mod memory;
 mod metrics;
@@ -235,6 +236,15 @@ enum Cmd {
         /// Prediction tolerance in percent.
         #[arg(long, default_value_t = predict::DEFAULT_TOLERANCE_PCT)]
         tolerance: f64,
+    },
+    /// What the autopilot learned, one entry per trial.
+    Learnings {
+        /// Print the raw JSONL records.
+        #[arg(long)]
+        json: bool,
+        /// Show only the last N.
+        #[arg(long, default_value_t = 20)]
+        tail: usize,
     },
     /// Side-by-side comparison of labelled runs.
     Compare {
@@ -481,7 +491,29 @@ fn main() -> Result<()> {
                     template: b.template,
                     home: None,
                 })?;
-                autopilot::execute(&mut lab, &opts)?;
+                let session = autopilot::execute(&mut lab, &opts)?;
+                let held = session
+                    .trials
+                    .iter()
+                    .filter(|(_, o)| !o.results.is_empty() && o.results.iter().all(|r| r.passed))
+                    .count();
+                println!(
+                    "{} trial(s) in {}, {held} with every prediction within tolerance. Stopped: {}.",
+                    session.trials.len(),
+                    autopilot::fmt_ms(session.spent_ms),
+                    session.stop
+                );
+                println!("Review: machine learnings   ·   machine progress   ·   machine wrap-up");
+            }
+        }
+        Cmd::Learnings { json, tail } => {
+            let ls = learnings::load(&notebook::Notebook::open()?)?;
+            if json {
+                for l in ls.iter().skip(ls.len().saturating_sub(tail)) {
+                    println!("{}", serde_json::to_string(l)?);
+                }
+            } else {
+                learnings::print(&ls, tail);
             }
         }
         Cmd::Compare { labels, metrics } => {
@@ -497,7 +529,10 @@ fn main() -> Result<()> {
             }
             println!("  Predict its primary metric before you run it.");
         }
-        Cmd::WrapUp => advisor::wrap_up(&notebook::Notebook::open()?.all()?),
+        Cmd::WrapUp => {
+            let nb = notebook::Notebook::open()?;
+            advisor::wrap_up(&nb.all()?, &learnings::load(&nb)?);
+        }
         Cmd::Env {
             llama_url,
             ollama_url,

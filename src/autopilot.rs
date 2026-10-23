@@ -15,10 +15,12 @@ use crate::backend::GenParams;
 use crate::backend::mock::approx_tokens;
 use crate::experiment::{self, SweepVar};
 use crate::lab::{Lab, Outcome};
+use crate::learnings::{self, Learning};
 use crate::metrics;
+use crate::notebook::now_secs;
 use crate::notebook::{Kind, Record};
 use crate::predict::Prediction;
-use crate::stats::Summary;
+use crate::stats::{self, Summary};
 use anyhow::{Result, bail};
 use std::collections::BTreeSet;
 
@@ -232,11 +234,11 @@ impl Proposal {
     pub fn command(&self, backend_flags: &str) -> String {
         // Flags go after the subcommand: `machine sweep --backend mock ...`.
         let cli = self.spec.cli();
-        let (cmd, rest) = cli
-            .strip_prefix("machine ")
-            .and_then(|r| r.split_once(' '))
-            .unwrap_or(("run", ""));
-        let mut s = format!("machine {cmd} {backend_flags}{rest}");
+        let rest = cli.strip_prefix("machine ").unwrap_or(&cli);
+        let (cmd, args) = rest.split_once(' ').unwrap_or((rest, ""));
+        let mut s = format!("machine {cmd} {backend_flags}{args}")
+            .trim_end()
+            .to_string();
         s += &format!(" --lesson {} --label {}", self.lesson, self.label);
         for p in &self.predictions {
             let v: Vec<String> = p.values.iter().map(|v| fmt_pred(*v)).collect();
@@ -432,7 +434,6 @@ pub struct AutopilotState {
     pub focus: Option<Focus>,
     pub bottleneck: String,
     /// Most recent learnings, oldest first (keeps the last 10).
-    #[allow(dead_code)] // used by learning records (next commit)
     pub recent: Vec<String>,
     /// Trials this session whose predictions missed, by key → (spec, measured means per point).
     pub missed: Vec<(String, ExperimentSpec, Vec<Prediction>)>,
@@ -457,7 +458,6 @@ impl AutopilotState {
         (self.budget_ms - self.spent_ms).max(0.0)
     }
 
-    #[allow(dead_code)]
     pub fn remember(&mut self, learning: String) {
         self.recent.push(learning);
         if self.recent.len() > 10 {
@@ -1105,6 +1105,210 @@ pub fn measured_like(preds: &[Prediction], o: &Outcome) -> Vec<Prediction> {
         .collect()
 }
 
+/// Rows of one group (warm-ups excluded) at one sweep value (None = all).
+fn group_values(records: &[Record], group: &str, value: Option<&str>, metric: &str) -> Vec<f64> {
+    records
+        .iter()
+        .filter(|r| r.group == group && !r.warmup && matches!(r.kind, Kind::Run | Kind::Agent))
+        .filter(|r| value.is_none_or(|v| r.value.as_deref() == Some(v)))
+        .filter_map(|r| r.metrics.get(metric).copied())
+        .collect()
+}
+
+fn pct(a: f64, b: f64) -> String {
+    if a == 0.0 {
+        format!("{:+}", metrics::short(b - a))
+    } else {
+        format!("{:+.0}%", 100.0 * (b - a) / a)
+    }
+}
+
+fn first_run_row<'a>(records: &'a [Record], group: &str) -> Option<&'a Record> {
+    records
+        .iter()
+        .find(|r| r.group == group && matches!(r.kind, Kind::Run | Kind::Agent))
+}
+
+/// Turn one trial into a structured learning. Deterministic: the text is a
+/// template over the measured numbers, never free generation.
+pub fn interpret(
+    p: &Proposal,
+    o: &Outcome,
+    before: &[Record],
+    after: &[Record],
+    state: &AutopilotState,
+    opts: &Options,
+    lab: &Lab,
+) -> Learning {
+    let mut prediction = std::collections::BTreeMap::new();
+    let mut actual = std::collections::BTreeMap::new();
+    let mut error_pct = std::collections::BTreeMap::new();
+    for pr in &p.predictions {
+        prediction.insert(pr.metric.clone(), learnings::value_or_list(&pr.values));
+        let a: Vec<f64> = o
+            .means
+            .iter()
+            .filter_map(|m| m.get(&pr.metric).copied())
+            .collect();
+        if a.len() == pr.values.len() {
+            actual.insert(pr.metric.clone(), learnings::value_or_list(&a));
+        }
+        let worst = o
+            .results
+            .iter()
+            .filter(|r| r.metric.split('@').next() == Some(pr.metric.as_str()))
+            .map(|r| r.error_pct)
+            .fold(0.0_f64, f64::max);
+        error_pct.insert(pr.metric.clone(), (worst * 10.0).round() / 10.0);
+    }
+    let passed = !o.results.is_empty() && o.results.iter().all(|r| r.passed);
+
+    let mut single_variable = true;
+    let mut sentences: Vec<String> = Vec::new();
+    match &p.spec {
+        ExperimentSpec::Sweep {
+            var,
+            values,
+            metric,
+            ..
+        } => {
+            let (lo, hi) = (&values[0], &values[values.len() - 1]);
+            let a = Summary::of(&group_values(after, &o.group, Some(lo), metric));
+            let b = Summary::of(&group_values(after, &o.group, Some(hi), metric));
+            if let (Some(a), Some(b)) = (a, b) {
+                sentences.push(format!(
+                    "Changing only {} from {lo} to {hi} moved {metric} from {} to {} ({}, {}).",
+                    var.name(),
+                    metrics::fmt(metric, a.mean),
+                    metrics::fmt(metric, b.mean),
+                    pct(a.mean, b.mean),
+                    stats::verdict(stats::welch_t(&a, &b))
+                ));
+            }
+            if *var == SweepVar::CachePrompt {
+                let pt = |v: &str| {
+                    Summary::of(&group_values(after, &o.group, Some(v), "prompt_tokens"))
+                        .map(|s| s.mean)
+                };
+                if let (Some(cold), Some(warm)) = (pt("false"), pt("true")) {
+                    sentences.push(format!(
+                        "On a cache hit the server evaluated {warm:.0} of {cold:.0} prompt tokens."
+                    ));
+                }
+            }
+        }
+        ExperimentSpec::Run { .. } => {
+            let d = Summary::of(&group_values(after, &o.group, None, "decode_tok_s"));
+            let w = Summary::of(&group_values(after, &o.group, None, "wall_ms"));
+            if let (Some(d), Some(w)) = (d, w) {
+                sentences.push(format!(
+                    "Over {} runs decode was {:.1} tok/s (cv {:.1}%) and wall {}; the smallest trustworthy effect here is ~{:.0}%.",
+                    d.n,
+                    d.mean,
+                    d.cv() * 100.0,
+                    metrics::fmt("wall_ms", w.mean),
+                    (2.0 * d.cv() * 100.0).max(1.0)
+                ));
+            }
+        }
+        ExperimentSpec::Agent {
+            settings,
+            baseline,
+            tasks,
+        } => {
+            let m = &o.means[0];
+            let get = |k: &str| m.get(k).copied().unwrap_or(0.0);
+            let base = if settings != baseline {
+                AgentStats::from_records(before, baseline, tasks.len())
+            } else {
+                None
+            };
+            match base {
+                Some(b) => {
+                    // Reuse compare's multi-setting detector against the baseline rows.
+                    let base_row = before.iter().rev().find(|r| baseline.matches(r));
+                    if let (Some(x), Some(y)) = (base_row, first_run_row(after, &o.group)) {
+                        let diff = experiment::differing_settings(x, y);
+                        single_variable = experiment::single_variable(&diff);
+                        if !single_variable {
+                            sentences.push(format!(
+                                "Confounded: differs from the baseline in {diff:?}, so it is not used for conclusions."
+                            ));
+                        }
+                    }
+                    sentences.push(format!(
+                        "Changing only {} moved success {:.0}% → {:.0}%, calls {:.1} → {:.1}, and wall {} → {} per task ({}).",
+                        settings.diff(baseline).join(", "),
+                        b.success * 100.0,
+                        get("success") * 100.0,
+                        b.calls,
+                        get("calls"),
+                        metrics::fmt("wall_ms", b.wall_ms),
+                        metrics::fmt("wall_ms", get("wall_ms")),
+                        pct(b.wall_ms, get("wall_ms"))
+                    ));
+                }
+                None => sentences.push(format!(
+                    "Agent at these settings: success {:.0}%, {:.1} calls and {} per task, {:.0} prompt tokens per call.",
+                    get("success") * 100.0,
+                    get("calls"),
+                    metrics::fmt("wall_ms", get("wall_ms")),
+                    get("prompt_tokens") / get("calls").max(1.0)
+                )),
+            }
+        }
+    }
+    let worst = o
+        .results
+        .iter()
+        .max_by(|a, b| a.error_pct.total_cmp(&b.error_pct));
+    sentences.push(match worst {
+        None => "No prediction was scored.".into(),
+        Some(_) if passed => format!(
+            "All {} prediction(s) were within ±{:.0}%, so the cost model explains this result.",
+            o.results.len(),
+            opts.tolerance_pct
+        ),
+        Some(w) => format!(
+            "The {} prediction missed by {:.0}%, so the assumption behind it does not hold here.",
+            w.metric, w.error_pct
+        ),
+    });
+    sentences.truncate(3);
+
+    // What the numbers now suggest: the proposer's next pick on the updated notebook.
+    // The state already lists this trial as tried (and as missed, if it missed).
+    let next_priority = match propose_next(state, after) {
+        Some(n) => format!(
+            "{}: {}",
+            n.key,
+            n.rationale
+                .split(". ")
+                .next()
+                .unwrap_or(&n.rationale)
+                .trim_end_matches('.')
+        ),
+        None => format!("nothing left in scope. Advisor: {}", advisor::next(after).0),
+    };
+
+    Learning {
+        kind: "learning".into(),
+        ts: learnings::iso8601(now_secs()),
+        experiment: p.command(&opts.backend_flags),
+        prediction,
+        actual,
+        error_pct,
+        passed,
+        learning: sentences.join(" "),
+        next_priority,
+        group: o.group.clone(),
+        key: p.key.clone(),
+        single_variable,
+        backend: lab.backend.name(),
+        simulated: lab.simulated(),
+    }
+}
+
 /// What happened in one autopilot session.
 #[derive(Debug)]
 pub struct Session {
@@ -1142,14 +1346,24 @@ pub fn execute(lab: &mut Lab, opts: &Options) -> Result<Session> {
                 measured_like(&p.predictions, &outcome),
             ));
         }
+        let after = relevant(&lab.notebook.all()?, &backend_name);
+        let l = interpret(&p, &outcome, &records, &after, &state, opts, lab);
+        learnings::append(&lab.notebook, &l)?;
+        println!(
+            "\n── LEARNING ({})",
+            if l.passed {
+                "predictions held"
+            } else {
+                "prediction missed"
+            }
+        );
+        println!("  {}", l.learning);
+        println!("  next: {}", l.next_priority);
+        state.remember(l.learning.clone());
         trials.push((p, outcome));
     };
     let spent_ms = start.elapsed().as_secs_f64() * 1000.0;
-    println!(
-        "\n═══ AUTOPILOT DONE: {} trial(s) in {}. Stopped: {stop}. ═══",
-        trials.len(),
-        fmt_ms(spent_ms)
-    );
+    println!("\n═══ AUTOPILOT DONE ═══");
     Ok(Session {
         trials,
         stop,
@@ -1207,6 +1421,23 @@ mod tests {
             !keys
                 .iter()
                 .any(|k| k == "sweep:max_tokens" || k.starts_with("agent:critic"))
+        );
+    }
+
+    #[test]
+    fn bare_agent_command_keeps_subcommand() {
+        let p = Proposal {
+            key: "agent:baseline".into(),
+            spec: agent_spec(AgentSettings::BASELINE),
+            predictions: vec![pred("calls", vec![2.0])],
+            rationale: String::new(),
+            lesson: 4,
+            label: "x".into(),
+            est_ms: 0.0,
+        };
+        assert_eq!(
+            p.command("--backend mock "),
+            "machine agent --backend mock --lesson 4 --label x --predict calls=2.0"
         );
     }
 

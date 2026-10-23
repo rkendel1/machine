@@ -16,8 +16,6 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct Outcome {
     pub group: String,
-    /// Point labels ("" for a single point, "max_tokens=16" … for sweeps).
-    pub points: Vec<String>,
     /// Mean of every metric at each point (warm-ups excluded).
     pub means: Vec<BTreeMap<String, f64>>,
     /// Scored predictions, as recorded in the Prediction row.

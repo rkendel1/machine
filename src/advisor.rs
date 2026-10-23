@@ -12,6 +12,9 @@ pub struct LessonProgress {
     pub last_error_pct: Option<f64>,
     pub mean_error_pct: Option<f64>,
     pub passed: bool,
+    /// Autopilot predictions for this lesson (shown, never used for gating).
+    pub auto_attempts: usize,
+    pub auto_passes: usize,
 }
 
 fn belongs(r: &Record, n: u8) -> bool {
@@ -24,26 +27,41 @@ fn belongs(r: &Record, n: u8) -> bool {
     lessons::get(n).is_some_and(|l| l.counts.iter().any(|p| r.experiment.starts_with(p)))
 }
 
-/// A lesson is passed when at least 2 predictions were within tolerance and
-/// the most recent one was too — "can you predict the next change reliably?"
+/// Rows written by `machine autopilot` carry `source=autopilot`.
+pub fn is_autopilot(r: &Record) -> bool {
+    r.tags.get("source").map(String::as_str) == Some("autopilot")
+}
+
+/// A lesson is passed when at least 2 of *your* predictions were within
+/// tolerance and the most recent one was too — "can you predict the next
+/// change reliably?" Autopilot predictions are machine predictions: they are
+/// reported alongside but never pass a lesson for you.
 pub fn progress(records: &[Record]) -> Vec<LessonProgress> {
     LESSONS
         .iter()
         .map(|l| {
-            let preds: Vec<_> = records
-                .iter()
-                .filter(|r| r.kind == Kind::Prediction && belongs(r, l.n))
-                .flat_map(|r| r.predictions.iter())
-                .collect();
-            let passes = preds.iter().filter(|p| p.passed).count();
-            let errs: Vec<f64> = preds.iter().map(|p| p.error_pct).collect();
+            let preds = |auto: bool| -> Vec<&crate::notebook::PredictionResult> {
+                records
+                    .iter()
+                    .filter(|r| {
+                        r.kind == Kind::Prediction && belongs(r, l.n) && is_autopilot(r) == auto
+                    })
+                    .flat_map(|r| r.predictions.iter())
+                    .collect()
+            };
+            let human = preds(false);
+            let auto = preds(true);
+            let passes = human.iter().filter(|p| p.passed).count();
+            let errs: Vec<f64> = human.iter().map(|p| p.error_pct).collect();
             LessonProgress {
                 n: l.n,
-                attempts: preds.len(),
+                attempts: human.len(),
                 passes,
-                last_error_pct: preds.last().map(|p| p.error_pct),
+                last_error_pct: human.last().map(|p| p.error_pct),
                 mean_error_pct: Summary::of(&errs).map(|s| s.mean),
-                passed: passes >= 2 && preds.last().is_some_and(|p| p.passed),
+                passed: passes >= 2 && human.last().is_some_and(|p| p.passed),
+                auto_attempts: auto.len(),
+                auto_passes: auto.iter().filter(|p| p.passed).count(),
             }
         })
         .collect()
@@ -51,7 +69,7 @@ pub fn progress(records: &[Record]) -> Vec<LessonProgress> {
 
 pub fn print_progress(records: &[Record]) {
     println!(
-        "═══ PROGRESS ═══  (a lesson passes after ≥2 predictions within tolerance, the latest included)\n"
+        "═══ PROGRESS ═══  (a lesson passes after ≥2 of YOUR predictions within tolerance, the latest included)\n"
     );
     let ps = progress(records);
     let mut unlocked = true;
@@ -65,8 +83,13 @@ pub fn print_progress(records: &[Record]) {
         } else {
             "locked "
         };
+        let auto = if p.auto_attempts > 0 {
+            format!("  autopilot {}/{}", p.auto_passes, p.auto_attempts)
+        } else {
+            String::new()
+        };
         println!(
-            "  [{status}] {}. {:<30} predictions {:>2}  within tol {:>2}  mean err {:>6}  last err {:>6}",
+            "  [{status}] {}. {:<30} predictions {:>2}  within tol {:>2}  mean err {:>6}  last err {:>6}{auto}",
             p.n,
             l.title,
             p.attempts,
@@ -87,7 +110,16 @@ pub fn print_progress(records: &[Record]) {
         .iter()
         .filter(|r| !r.simulated && r.kind != Kind::Prediction)
         .count();
-    println!("\n  rows in notebook: {real} real, {sim} simulated");
+    let auto = records
+        .iter()
+        .filter(|r| r.kind != Kind::Prediction && is_autopilot(r))
+        .count();
+    println!("\n  rows in notebook: {real} real, {sim} simulated ({auto} written by autopilot)");
+    if ps.iter().any(|p| p.auto_attempts > 0) {
+        println!(
+            "  autopilot a/b = predictions within tolerance / scored. They show the cost model works; they don't pass lessons for you."
+        );
+    }
     if sim > 0 && real == 0 {
         println!(
             "  all evidence so far is SIMULATED — passing here means you understand the harness, not your hardware."
@@ -366,7 +398,7 @@ pub fn next(records: &[Record]) -> (String, String) {
     )
 }
 
-pub fn wrap_up(records: &[Record]) {
+pub fn wrap_up(records: &[Record], learned: &[crate::learnings::Learning]) {
     println!("═══ SESSION CHECK ═══\n");
     println!("Answer these out loud or in writing before you close the terminal:");
     println!(
@@ -401,6 +433,18 @@ pub fn wrap_up(records: &[Record]) {
             "No weak spot: every lesson you've predicted on is within tolerance on average."
         ),
         None => println!("No predictions recorded yet — run any experiment and predict first."),
+    }
+
+    if let Some(last) = learned.last() {
+        let passed = learned.iter().filter(|l| l.passed).count();
+        println!(
+            "\nAUTOPILOT: {} trial(s), {passed} with every prediction within tolerance (`machine learnings`).",
+            learned.len()
+        );
+        println!("  latest ({}): {}", last.key, last.learning);
+        println!(
+            "  Can you explain that result yourself, from the numbers, before reading the next one?"
+        );
     }
 
     let (why, cmd) = next(records);

@@ -123,11 +123,16 @@ pub fn run(lab: &mut Lab, o: RunOpts) -> Result<lab::Outcome> {
 
     let mean = lab::means(&rows);
     let points = vec![String::new()];
-    let results =
-        lab.score_and_record(&group, experiment, &preds, &points, &[mean.clone()], None)?;
+    let results = lab.score_and_record(
+        &group,
+        experiment,
+        &preds,
+        &points,
+        std::slice::from_ref(&mean),
+        None,
+    )?;
     Ok(lab::Outcome {
         group,
-        points,
         means: vec![mean],
         results,
     })
@@ -385,7 +390,6 @@ pub fn sweep(lab: &mut Lab, o: SweepOpts) -> Result<lab::Outcome> {
     )?;
     Ok(lab::Outcome {
         group,
-        points: labels,
         means,
         results,
     })

@@ -414,12 +414,11 @@ pub fn run(lab: &mut Lab, o: AgentOpts) -> Result<lab::Outcome> {
         &experiment,
         &preds,
         &points,
-        &[mean.clone()],
+        std::slice::from_ref(&mean),
         Some("agent"),
     )?;
     Ok(lab::Outcome {
         group,
-        points,
         means: vec![mean],
         results,
     })
